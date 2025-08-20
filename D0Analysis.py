@@ -36,7 +36,8 @@ class PtBin():
 class Analysis():
     """Class containing everything needed to calculate a D0 cross section from O2Physics output"""
 
-    def __init__(self, pathTableReader, pathTableMaker, pathRec, pathGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], IsITSUPCMode = 2):
+    def __init__(self, pathTableReader, pathTableMaker, pathRec, pathGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], IsITSUPCMode = 2, old=False):
+        self.old = old
         # Files containing the necessary histograms
         self.fileTableReader = r.TFile.Open(pathTableReader)
         self.fileTableMaker = r.TFile.Open(pathTableMaker)
@@ -322,66 +323,66 @@ class Analysis():
 
     def calculate_correction(self, reweighting = True):
         self.reweighting = reweighting
-        self.histRecOverGenFine = self.histD0PtMatched.Clone()
-        self.histRecOverGenFine.Divide(self.histD0PtGenerated)
+        self.effRecOverGenFine = self.histD0PtMatched.Clone()
+        self.effRecOverGenFine.Divide(self.histD0PtGenerated)
         print(f"Rec/Gen histogram was calculated using '{self.groupNameD0PtMatched}' and '{self.groupNameD0Generated}'")
-        self.histRecOverGenFine.SetName("histRecOverGenFine")
-        self.histRecOverGenFine.SetTitle("Reconstructed, matched D0 / Generated D0 after BC cuts")
+        self.effRecOverGenFine.SetName("effRecOverGenFine")
+        self.effRecOverGenFine.SetTitle("Reconstructed, matched D0 / Generated D0 after BC cuts")
         # Make sure the pT axis is (0, 12) GeV
-        if (self.histRecOverGenFine.FindBin(self.ptBinsArray[-1]) <= self.histRecOverGenFine.GetNbinsX()):
-            nFineBins = self.histRecOverGenFine.FindBin(self.ptBinsArray[-1])
-            histTemp = r.TH1F("histRecOverGenFine", "Reconstructed, matched D0 / Generated D0 after BC cuts", nFineBins, self.ptBinsArray[0], self.ptBinsArray[-1])
+        if (self.effRecOverGenFine.FindBin(self.ptBinsArray[-1]) <= self.effRecOverGenFine.GetNbinsX()):
+            nFineBins = self.effRecOverGenFine.FindBin(self.ptBinsArray[-1])
+            histTemp = r.TH1F("effRecOverGenFine", "Reconstructed, matched D0 / Generated D0 after BC cuts", nFineBins, self.ptBinsArray[0], self.ptBinsArray[-1])
             for i in range(1, nFineBins + 1):
-                histTemp.SetBinContent(i, self.histRecOverGenFine.GetBinContent(i))
-                histTemp.SetBinError(i, self.histRecOverGenFine.GetBinError(i))
+                histTemp.SetBinContent(i, self.effRecOverGenFine.GetBinContent(i))
+                histTemp.SetBinError(i, self.effRecOverGenFine.GetBinError(i))
 
-            self.histRecOverGenFine = histTemp
+            self.effRecOverGenFine = histTemp
         # Create a new version of the correction factor hist with the final binning and range
-        histD0PtMatchedFinalBins = self.histD0PtMatched.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedFinalBins", np.asarray(self.ptBinsArray, 'd'))
-        histD0PtGeneratedFinalBins = self.histD0PtGenerated.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
-        self.histRecOverGen = histD0PtMatchedFinalBins.Clone()
-        self.histRecOverGen.SetName("histRecOverGen")
-        self.histRecOverGen.SetTitle("Reconstructed / Generated;p_{T};Ratio")
-        self.histRecOverGen.Divide(histD0PtGeneratedFinalBins)
+        self.histD0PtMatchedFinalBins = self.histD0PtMatched.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedFinalBins", np.asarray(self.ptBinsArray, 'd'))
+        self.histD0PtGeneratedFinalBins = self.histD0PtGenerated.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
+        self.effRecOverGen = self.histD0PtMatchedFinalBins.Clone()
+        self.effRecOverGen.SetName("effRecOverGen")
+        self.effRecOverGen.SetTitle("Reconstructed / Generated;p_{T};Ratio")
+        self.effRecOverGen.Divide(self.histD0PtGeneratedFinalBins)
         # Apply correction factor
         self.histCorrectedSpectrum = self.histRawYield.Clone()
         self.histCorrectedSpectrum.SetName("histCorrectedSpectrumWithoutReweighting")
         self.histCorrectedSpectrum.SetTitle("Corrected pT spectrum without reweighting")
         self.histCorrectedSpectrum.GetYaxis().SetTitle("dN/dp_{T}")
-        self.histCorrectedSpectrum.Divide(self.histRecOverGen)
+        self.histCorrectedSpectrum.Divide(self.effRecOverGen)
 
         if reweighting:
             self.reweightingFunc = r.TF1("powerLaw", "[0]*x/TMath::Power((1+TMath::Power(x/[1],[3])),[2])", 0, 12)
             self.reweightingFunc.SetParameters(394000, 1.83, 1.78, 2.87)
             print("===== Fitting to the corrected spectrum for reweighting =====")
             self.reweightingFitResults = self.histCorrectedSpectrum.Fit(self.reweightingFunc, "LS0")
-            self.histRecOverGenReweighted = self.histRecOverGen.Clone()
-            self.histRecOverGenReweighted.Reset()
-            self.histRecOverGenReweighted.SetName("histRecOverGenReweighted")
-            self.histRecOverGenReweighted.SetTitle("Reconstructed / Generated, reweighted")
-            dpT = self.histRecOverGenFine.GetBinWidth(1)
+            self.effRecOverGenReweighted = self.effRecOverGen.Clone()
+            self.effRecOverGenReweighted.Reset()
+            self.effRecOverGenReweighted.SetName("effRecOverGenReweighted")
+            self.effRecOverGenReweighted.SetTitle("Reconstructed / Generated, reweighted")
+            dpT = self.effRecOverGenFine.GetBinWidth(1)
             # Calculate numerator of <epsilon>_i
-            for i in range(1, self.histRecOverGenFine.GetNbinsX() + 1):
-                binCenter = self.histRecOverGenFine.GetBinCenter(i)
-                binContent = self.histRecOverGenFine.GetBinContent(i)
-                binError = self.histRecOverGenFine.GetBinError(i)
+            for i in range(1, self.effRecOverGenFine.GetNbinsX() + 1):
+                binCenter = self.effRecOverGenFine.GetBinCenter(i)
+                binContent = self.effRecOverGenFine.GetBinContent(i)
+                binError = self.effRecOverGenFine.GetBinError(i)
                 weight = self.reweightingFunc.Eval(binCenter)
                 # Calculate weighted content
                 weightedContent = binContent * weight * dpT
                 weightedError = np.abs(weight) * dpT * binError # Error propagation
                 # Find the target bin and fill it
-                targetBin = self.histRecOverGenReweighted.FindBin(binCenter)
-                self.histRecOverGenReweighted.AddBinContent(targetBin, weightedContent)
-                currentErrorTarget = self.histRecOverGenReweighted.GetBinError(targetBin)
-                self.histRecOverGenReweighted.SetBinError(targetBin, np.sqrt(currentErrorTarget**2 + weightedError**2))
+                targetBin = self.effRecOverGenReweighted.FindBin(binCenter)
+                self.effRecOverGenReweighted.AddBinContent(targetBin, weightedContent)
+                currentErrorTarget = self.effRecOverGenReweighted.GetBinError(targetBin)
+                self.effRecOverGenReweighted.SetBinError(targetBin, np.sqrt(currentErrorTarget**2 + weightedError**2))
             # Calculate denominator of <epsilon>_i
-            histDenominator = self.histRecOverGen.Clone()
+            histDenominator = self.effRecOverGen.Clone()
             histDenominator.Reset()
             # For some reason the first iteration of IntegralError gives a nonsensical value, throw this away first
             _ = self.reweightingFunc.IntegralError(0., 0.1, self.reweightingFitResults.GetParams(), self.reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
-            for i in range(1, self.histRecOverGenReweighted.GetNbinsX() + 1):
-                lowEdge = self.histRecOverGenReweighted.GetXaxis().GetBinLowEdge(i)
-                upEdge = self.histRecOverGenReweighted.GetXaxis().GetBinUpEdge(i)
+            for i in range(1, self.effRecOverGenReweighted.GetNbinsX() + 1):
+                lowEdge = self.effRecOverGenReweighted.GetXaxis().GetBinLowEdge(i)
+                upEdge = self.effRecOverGenReweighted.GetXaxis().GetBinUpEdge(i)
                 print(f"--- Calculating integral of reweightingFunc from {lowEdge} to {upEdge} ---")
                 integral = self.reweightingFunc.Integral(lowEdge, upEdge)
                 histDenominator.SetBinContent(i, integral)
@@ -389,26 +390,31 @@ class Analysis():
                 print(f"Bin {i}: integral = {integral} +- {integralError}")
                 histDenominator.SetBinError(i, integralError)
             # Obtain <epsilon>_i as a histogram
-            self.histRecOverGenReweighted.Divide(histDenominator)
-            self.histRecOverGenWithoutReweighting = self.histRecOverGen
-            self.histRecOverGenWithoutReweighting.SetLineColor(r.kRed)
-            self.histRecOverGen = self.histRecOverGenReweighted
+            self.effRecOverGenReweighted.Divide(histDenominator)
+            self.effRecOverGenWithoutReweighting = self.effRecOverGen
+            self.effRecOverGenWithoutReweighting.SetLineColor(r.kRed)
+            self.effRecOverGenWithoutReweighting.SetTitle("Reconstructed / Generated, without reweighting")
+            self.effRecOverGen = self.effRecOverGenReweighted
 
             # Apply reweighted correction factor
             self.histCorrectedSpectrumReweighted = self.histRawYield.Clone()
             self.histCorrectedSpectrumReweighted.SetName("histCorrectedSpectrumWithReweighting")
             self.histCorrectedSpectrumReweighted.SetTitle("Corrected pT spectrum with reweighting")
             self.histCorrectedSpectrumReweighted.GetYaxis().SetTitle("dN/dp_{T}")
-            self.histCorrectedSpectrumReweighted.Divide(self.histRecOverGen)
+            self.histCorrectedSpectrumReweighted.Divide(self.effRecOverGen)
             self.histCorrectedSpectrumWithoutReweighting = self.histCorrectedSpectrum
             self.histCorrectedSpectrumWithoutReweighting.SetLineColor(r.kRed)
+            self.histCorrectedSpectrumWithoutReweighting.SetTitle("Corrected spectrum, without reweighting")
             self.histCorrectedSpectrum = self.histCorrectedSpectrumReweighted
 
     def calculate_isitsupcmode_efficiency(self):
         if self.isITSUPCMode == 2:
             raise Exception("Analysis was not initialized with an IsITSUPCMode value specified!")
         # Calculate the efficiency of the selection applied on IsITSUPCMode, which is to be multiplied by the correction factor obtained in calculate_correction
-        histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyMassPtIsITSUPCModeHisto")
+        if self.old:
+            histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyMassPtIsITSUPCModeHisto")
+        else:
+            histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_D0StrictTopoCuts2").FindObject("MyMassPtIsITSUPCModeHisto")
         # Select D0 candidates by projecting out the D0 mass range (TODO: use a histogram with a very good S/B for this specific purpose)
         lowerBin = histD0MassPtIsITSUPCMode.GetXaxis().FindBin(1.8) + 1
         upperBin = histD0MassPtIsITSUPCMode.GetXaxis().FindBin(1.9)
@@ -422,6 +428,96 @@ class Analysis():
         self.histIsITSUPCModeEfficiency.SetName("histIsITSUPCModeEfficiency")
         self.histIsITSUPCModeEfficiency.SetTitle(f"IsITSUPCMode={self.isITSUPCMode} selection efficiency (est. from data)")
         self.histIsITSUPCModeEfficiency.Divide(self.histD0PtIsITSUPCModeAll)
+
+    def calculate_partial_efficiencies(self):
+        """
+        Total efficiency = N(rec. matched D0 after all cuts) / N(gen. D0 after BC cuts)
+        """
+        # Prepare histograms
+        if not hasattr(self, 'histD0PtGeneratedFinalBins'):
+            self.histD0PtGeneratedFinalBins = self.histD0PtGenerated.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
+
+        self.histD0PtYGenInRecEvent = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject("MCTruthGenRec_D0FS").FindObject("MyMcPtYHisto")
+        lowerYBin = self.histD0PtYGenInRecEvent.GetYaxis().FindBin(self.minY)
+        upperYBin = self.histD0PtYGenInRecEvent.GetYaxis().FindBin(self.maxY) - 1
+        self.histD0PtGenInRecEvent = self.histD0PtYGenInRecEvent.ProjectionX(f"projPtMcGenInRecEvent_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
+        self.histD0PtGenInRecEvent.SetTitle(f"Generated D0 in reconstructed event, {self.minY} < y < {self.maxY}")
+        self.histD0PtGenInRecEvent = self.histD0PtGenInRecEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInRecEventFinalBins", np.asarray(self.ptBinsArray, 'd'))
+
+        self.histD0PtYGenInSelEvent = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject("MCTruthGenSel_D0FS").FindObject("MyMcPtYHisto")
+        lowerYBin = self.histD0PtYGenInSelEvent.GetYaxis().FindBin(self.minY)
+        upperYBin = self.histD0PtYGenInSelEvent.GetYaxis().FindBin(self.maxY) - 1
+        self.histD0PtGenInSelEvent = self.histD0PtYGenInSelEvent.ProjectionX(f"projPtMcGenInSelEvent_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
+        self.histD0PtGenInSelEvent.SetTitle(f"Generated D0 in reconstructed event, {self.minY} < y < {self.maxY}")
+        self.histD0PtGenInSelEvent = self.histD0PtGenInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInSelEventFinalBins", np.asarray(self.ptBinsArray, 'd'))
+
+        self.histD0PtMatchedInSelEvent = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0").FindObject("Pt")
+        self.histD0PtMatchedInSelEvent = self.histD0PtMatchedInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEvent", np.asarray(self.ptBinsArray, 'd'))
+        self.histD0PtMatchedInSelEvent.SetTitle("Reconstructed, matched D0->Kpi in selected event, no track or pair cuts")
+
+        self.histD0PtMatchedInSelEventAfterTrackCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_KPiFromD0").FindObject("Pt")
+        self.histD0PtMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCuts.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEventAfterTrackCuts", np.asarray(self.ptBinsArray, 'd'))
+        self.histD0PtMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
+
+        if not hasattr(self, 'histD0PtMatchedFinalBins'):
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut_KPiFromD0").FindObject("Pt")
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Rebin(len(self.ptBinsArray) - 1, "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", np.asarray(self.ptBinsArray, 'd'))
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
+        else:
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedFinalBins.Clone()
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetName("PtMcMatchedInSelEventAfterTrackCutsAndPairCuts")
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
+
+        # List to hold total efficiencies calculated from different factorizations
+        self.totalEfficiencies = []
+
+        # Calculate efficiencies
+        self.effRecMatchedToGenInRecEvent = self.histD0PtMatchedFinalBins.Clone()
+        self.effRecMatchedToGenInRecEvent.Divide(self.histD0PtMatchedFinalBins, self.histD0PtGenInRecEvent, 1, 1, "B")
+        self.effRecMatchedToGenInRecEvent.SetName("effRecMatchedToGenInRecEvent")
+        self.effRecMatchedToGenInRecEvent.SetTitle("Reconstructed, matched D0 / MC gen D0 in reconstructed events")
+
+        self.effGenInRecEventToGen = self.histD0PtGenInRecEvent.Clone()
+        self.effGenInRecEventToGen.Divide(self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins, 1, 1, "B")
+        self.effGenInRecEventToGen.SetName("effGenInRecEventToGen")
+        self.effGenInRecEventToGen.SetTitle("MC gen D0 in reconstructed events / MC gen D0 in all gen events passing BC cuts")
+
+        totalEff = self.effRecMatchedToGenInRecEvent.Clone()
+        totalEff.Multiply(self.effRecMatchedToGenInRecEvent, self.effGenInRecEventToGen, 1, 1, "B")
+        totalEff.SetName("effTotal_GenInRecEventToGen*RecMatchedToGenInRecEvent")
+        totalEff.SetTitle("Total #varepsilon = effGenInRecEventToGen * effRecMatchedToGenInRecEvent")
+        self.totalEfficiencies.append(totalEff)
+        del totalEff
+
+        self.effGenInSelEventToGenInRecEvent = self.histD0PtGenInSelEvent.Clone()
+        self.effGenInSelEventToGenInRecEvent.Divide(self.histD0PtGenInSelEvent, self.histD0PtGenInRecEvent, 1, 1, "B")
+        self.effGenInSelEventToGenInRecEvent.SetName("effGenInSelEventToGenInRecEvent")
+        self.effGenInSelEventToGenInRecEvent.SetTitle("MC gen D0 in selected events / MC gen D0 in reconstructed events")
+
+        self.effRecMatchedInSelEventToGenInSelEvent = self.histD0PtMatchedInSelEvent.Clone()
+        self.effRecMatchedInSelEventToGenInSelEvent.Divide(self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEvent, 1, 1, "B")
+        self.effRecMatchedInSelEventToGenInSelEvent.SetName("effRecMatchedInSelEventToGenInSelEvent")
+        self.effRecMatchedInSelEventToGenInSelEvent.SetTitle("Reconstructed, matched D0 in selected events / MC gen D0 in selected events")
+
+        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent = self.histD0PtMatchedInSelEventAfterTrackCuts.Clone()
+        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent.Divide(self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEvent, 1, 1, "B")
+        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent.SetName("effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent")
+        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent.SetTitle("Reconstructed, matched D0 in selected events, after track cuts / Reconstructed, matched D0 in selected events")
+
+        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Clone()
+        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts.Divide(self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts, 1, 1, "B")
+        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts.SetName("effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts")
+        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0 in selected events, after track cuts and pair cuts / Reconstructed, matched D0 in selected events after track cuts")
+
+        totalEff = self.effGenInRecEventToGen.Clone()
+        totalEff.Multiply(totalEff, self.effGenInSelEventToGenInRecEvent, 1, 1, "B")
+        totalEff.Multiply(totalEff, self.effRecMatchedInSelEventToGenInSelEvent, 1, 1, "B")
+        totalEff.Multiply(totalEff, self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent, 1, 1, "B")
+        totalEff.Multiply(totalEff, self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts, 1, 1, "B")
+        totalEff.SetName("effTotal_GenInReEventToGen*GenInSelEventToGenInRecEvent*RecMatchedInSelEventToGenInSelEvent*RecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent*RecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts")
+        totalEff.SetTitle("Total #varepsilon = effGenInRecEventToGen * effGenInSelEventToGenInRecEvent * effRecMatchedInSelEventToGenInSelEvent * effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent * effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts")
+        self.totalEfficiencies.append(totalEff)
+        del totalEff
 
     def create_raw_yield_histogram(self):
         self.histRawYield = r.TH1F("histRawYield", "Raw yield /#Delta p_{T}, raw stat. errors", len(self.ptBins), np.asarray(self.ptBinsArray, 'd'))
