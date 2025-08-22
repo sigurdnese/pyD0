@@ -113,8 +113,7 @@ class PtBin():
 class Analysis():
     """Class containing everything needed to calculate a D0 cross section from O2Physics output"""
 
-    def __init__(self, pathTableReader, pathTableMaker, pathRec, pathGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], IsITSUPCMode = 2, old=False):
-        self.old = old
+    def __init__(self, pathTableReader, pathTableMaker, pathRec, pathGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], IsITSUPCMode = 2):
         # Files containing the necessary histograms
         self.fileTableReader = r.TFile.Open(pathTableReader)
         self.fileTableMaker = r.TFile.Open(pathTableMaker)
@@ -299,109 +298,6 @@ class Analysis():
         self.ptBins[bin].dataReflFunc = dataReflFunc
         self.ptBins[bin].create_fit_results(self.massRange[0], self.massRange[1])
 
-    def fit_inv_mass_normsum(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = []):
-        self.ptBins[bin].fitRange = fitRange
-        print(f"====== Fitting bin {bin} ({self.ptBins[bin].lowerPt} < pT < {self.ptBins[bin].upperPt} GeV/c) ======")
-        # Fit the reflected MC histogram with a double Gaussian
-        reflFunc = r.TF1(f"fDoubleGauss_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2) + [3]*exp(-0.5*((x-[4])/[5])^2)", 1.3, 2.3)
-        reflFunc.SetParameters(1, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2, 1, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2)
-        reflFunc.SetParNames("Amp1", "Mean1", "Sigma1", "Amp2", "Mean2", "Sigma2")
-        # Require the amplitudes to be positive
-        reflFunc.SetParLimits(0, 0, 1e6)
-        reflFunc.SetParLimits(3, 0, 1e6)
-        print("---- Fitting MC matched, reflected ----")
-        self.ptBins[bin].massPtSliceReflected.Fit(reflFunc, "LR0")
-        self.ptBins[bin].reflFunc = reflFunc
-
-        self.ptBins[bin].reflectedRatio = self.ptBins[bin].massPtSliceReflected.GetEntries() / self.ptBins[bin].nMatched
-
-        # Set up fitting function
-        signalAndReflBkgFunc = r.TF1(f"signalAndReflBkgFunc_bin{bin}", "exp(-0.5*((x-[0])/[1])^2) + [2]*(exp(-0.5*((x-[3])/[4])^2) + [5]*exp(-0.5*((x-[6])/[7])^2))", fitRange[0], fitRange[1])
-        signalAndReflBkgFunc.SetParNames("Mean", "Sigma", "ReflRatio", "Mean1", "Sigma1", "Frac2", "Mean2", "Sigma2")
-        signalAndReflBkgFunc.SetParameter("Mean", 1.85)
-        signalAndReflBkgFunc.SetParameter("Sigma", 0.12)
-        if backgroundName == "pol2":
-            combBkgFunc = r.TF1(f"combBkgPol2_{bin}", "([0]*x*x + [1]*x + 1)", fitRange[0], fitRange[1])
-            combBkgFunc.SetParNames("a", "b")
-            if len(initialParams) == 0:
-                # Find good initial parameters
-                x0 = fitRange[0]
-                y0 = self.ptBins[bin].massPtSlice.GetBinContent(self.ptBins[bin].massPtSlice.GetXaxis().FindBin(x0))
-                x1 = fitRange[1]
-                y1 = self.ptBins[bin].massPtSlice.GetBinContent(self.ptBins[bin].massPtSlice.GetXaxis().FindBin(x1))
-                b = (y1 - y0) / (x1 - x0)
-                c = y0 - b*x0
-                combBkgFunc.SetParameters(0, b/c) 
-                fitNormSum = r.TF1NormSum(signalAndReflBkgFunc, combBkgFunc, c/100, c)
-            else:
-                raise Exception("Custom intial values are not implemented yet!")
-
-            fitFunc = r.TF1(f"fGaussPol2_bin{bin}", fitNormSum, fitRange[0], fitRange[1], fitNormSum.GetNpar())
-
-        elif backgroundName == "exp":
-            combBkgFunc = r.TF1(f"combBkgExp_{bin}", "exp([0]*x)", fitRange[0], fitRange[1])
-            combBkgFunc.SetParNames("A")
-            if len(initialParams) == 0:
-                combBkgFunc.SetParameters(-2)
-                fitNormSum = r.TF1NormSum(signalAndReflBkgFunc, combBkgFunc, 25, 500)
-            else:
-                raise Exception("Custom intial values are not implemented yet!")
-
-            fitFunc = r.TF1(f"fGaussExp_bin{bin}", fitNormSum, fitRange[0], fitRange[1], fitNormSum.GetNpar())
-
-        else:
-            raise Exception(f"Invalid background function '{backgroundName}'")
-
-        fitFunc.SetParameters(np.asarray(fitNormSum.GetParameters()))
-
-        fitFunc.SetParName(0, "normSignal")
-        fitFunc.SetParName(1, "normCombBkg")
-        for i in range(2, fitFunc.GetNpar()):
-            fitFunc.SetParName(i, fitNormSum.GetParName(i))
-
-        fitFunc.SetParameter(4, self.ptBins[bin].reflectedRatio)
-        fitFunc.SetParameter(5, reflFunc.GetParameter("Mean1"))
-        fitFunc.SetParameter(6, reflFunc.GetParameter("Sigma1"))
-        fitFunc.SetParameter(7, reflFunc.GetParameter("Amp2")/reflFunc.GetParameter("Amp1"))
-        fitFunc.SetParameter(8, reflFunc.GetParameter("Mean2"))
-        fitFunc.SetParameter(9, reflFunc.GetParameter("Sigma2"))
-        fitFunc.FixParameter(4, self.ptBins[bin].reflectedRatio)
-        fitFunc.FixParameter(5, reflFunc.GetParameter("Mean1"))
-        fitFunc.FixParameter(6, reflFunc.GetParameter("Sigma1"))
-        fitFunc.FixParameter(7, reflFunc.GetParameter("Amp2")/reflFunc.GetParameter("Amp1"))
-        fitFunc.FixParameter(8, reflFunc.GetParameter("Mean2"))
-        fitFunc.FixParameter(9, reflFunc.GetParameter("Sigma2"))
-
-        # Fit the histogram
-        print("---- Fitting data ----")
-        # self.ptBins[bin].massPtSlice.Fit(fitFunc, "LR0")
-
-        # Obtain the signal and background functions separately
-        signalFunc = r.TF1(f"signalFunc_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2)", fitRange[0], fitRange[1])
-        signalFunc.SetParameters(fitFunc.GetParameter("normSignal"), fitFunc.GetParameter("Mean"), fitFunc.GetParameter("Sigma"))
-
-        if backgroundName == "pol2":
-            backgroundFunc = r.TF1(f"backgroundFunc_bin{bin}", "[0]*([1]*x*x + [2]*x + 1)", fitRange[0], fitRange[1])
-            backgroundFunc.SetParameters(fitFunc.GetParameter("nCombBkg"), fitFunc.GetParameter("a"), fitFunc.GetParameter("b"))
-        elif backgroundName == "exp":
-            backgroundFunc = r.TF1(f"backgroundFunc_bin{bin}", "([0]*exp([1]*x))", fitRange[0], fitRange[1])
-            backgroundFunc.SetParameters(fitFunc.GetParameter("nCombBkg"), fitFunc.GetParameter("A"))
-        else:
-            raise Exception(f"Background function '{backgroundName}' not implemented when extracting separate background shape!")
-        backgroundFunc.SetLineColor(r.kBlue)
-
-        dataReflFunc = r.TF1(f"dataReflFunc_bin{bin}", "[0]*(exp(-0.5*((x-[1])/[2])^2) + [3]*exp(-0.5*((x-[4])/[5])^2))", fitRange[0], fitRange[1])
-        dataReflNorm = fitFunc.GetParameter("ReflRatio")*fitFunc.GetParameter("normSignal")
-        dataReflFunc.SetParameters(dataReflNorm, fitFunc.GetParameter("Mean1"), fitFunc.GetParameter("Sigma1"), fitFunc.GetParameter("Frac2"), fitFunc.GetParameter("Mean2"), fitFunc.GetParameter("Sigma2"))
-        dataReflFunc.SetLineColor(r.kGreen - 1)
-        dataReflFunc.SetLineStyle(r.kDashed)
-
-        self.ptBins[bin].fitFunc = fitFunc
-        self.ptBins[bin].signalFunc = signalFunc
-        self.ptBins[bin].backgroundFunc = backgroundFunc
-        self.ptBins[bin].dataReflFunc = dataReflFunc
-        self.ptBins[bin].create_fit_results()
-
     def calculate_correction(self, reweighting = True):
         self.reweighting = reweighting
         self.effRecOverGenFine = self.histD0PtMatched.Clone()
@@ -492,10 +388,7 @@ class Analysis():
         if self.isITSUPCMode == 2:
             raise Exception("Analysis was not initialized with an IsITSUPCMode value specified!")
         # Calculate the efficiency of the selection applied on IsITSUPCMode, which is to be multiplied by the correction factor obtained in calculate_correction
-        if self.old:
-            histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyMassPtIsITSUPCModeHisto")
-        else:
-            histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_D0StrictTopoCuts2").FindObject("MyMassPtIsITSUPCModeHisto")
+        histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_D0StrictTopoCuts2").FindObject("MyMassPtIsITSUPCModeHisto")
         # Select D0 candidates by projecting out the D0 mass range (TODO: use a histogram with a very good S/B for this specific purpose)
         lowerBin = histD0MassPtIsITSUPCMode.GetXaxis().FindBin(1.8) + 1
         upperBin = histD0MassPtIsITSUPCMode.GetXaxis().FindBin(1.9)
@@ -574,6 +467,7 @@ class Analysis():
     def create_raw_yield_histogram(self):
         self.histRawYield = r.TH1F("histRawYield", "Raw yield /#Delta p_{T}, raw stat. errors", len(self.ptBins), np.asarray(self.ptBinsArray, 'd'))
         self.histRawYield.GetYaxis().SetTitle("Raw D^{0} yield (1/GeV c^{-1})")
+        self.histRawYield.GetXaxis().SetTitle("p_{T} (GeV c^{-1})")
         for i, bin in enumerate(self.ptBins):
             self.histRawYield.SetBinContent(i+1, bin.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
@@ -600,7 +494,13 @@ class Analysis():
         self.histRawYieldPerLumi.SetTitle("Raw yield /#Delta p_{T} L_{int}")
         self.histRawYieldPerLumi.Scale(1 / self.lumi) # µb / GeVc^-1
         self.histRawYieldPerLumi.Scale(1 / 1000.) # mb / GeVc^-1
-        self.histRawYieldPerLumi.GetYaxis().SetTitle("Raw D^{0} yield / L_{int} (1/GeV c^{-1})")
+        self.histRawYieldPerLumi.GetYaxis().SetTitle("Raw D^{0} yield / L_{int} (mb/GeV c^{-1})")
+        self.histRawYieldPerLumi.SetStats(0)
+        self.canvasRawYieldPerLumi = r.TCanvas("canvasRawYieldPerLumi")
+        self.canvasRawYieldPerLumi.cd()
+        self.histRawYieldPerLumi.Draw()
+        r.gPad.SetLogy()
+        self.canvasRawYieldPerLumi.Draw()
 
     def calculate_cross_section(self):
         # Get the branching fraction from the PDG
