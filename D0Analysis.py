@@ -1,6 +1,83 @@
 import ROOT as r
 import numpy as np
 
+class EfficiencyFactor():
+    def __init__(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
+        self.histogram = histNumerator.Clone()
+        self.histogram.Divide(histNumerator, histDenominator, 1, 1, "B")
+        self.histogram.SetName(f"eff_{histNumerator.GetName()}_{histDenominator.GetName()}")
+        self.histogram.SetTitle(f"eff_{histNumerator.GetName()}_{histDenominator.GetName()}")
+        self.titleRaw = "#frac{%s}{%s}" % (numeratorTitle, denominatorTitle)
+        self.shortTitle = ""
+
+    def draw_title(self, x, y, size=0.04, includeshort=False):
+        self.title = r.TLatex()
+        self.title.SetTextSize(size)
+        self.title.SetTextAlign(22)
+        if includeshort:
+            self.title.DrawLatexNDC(x, y, self.titleRaw+"    "+self.shortTitle)
+        else:
+            self.title.DrawLatexNDC(x, y, self.titleRaw)
+
+    def replace_displayed_title(self, includeshort=False):
+        # Replace the displayed title of the histogram with the TeX formatted title
+        self.histogram.SetTitle("")
+        self.draw_title(0.5, 0.95, size=0.035, includeshort=includeshort)
+
+class FactorizedEfficiency():
+    def __init__(self, nFactors):
+        if nFactors == 0:
+            raise Exception("Need at least one factor!")
+        self.nFactors = nFactors
+        self.factors = []
+
+    def add_factor(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
+        self.factors.append(EfficiencyFactor(numeratorTitle, denominatorTitle, histNumerator, histDenominator))
+        self.factors[-1].shortTitle = f"({len(self.factors)})"
+
+    def calculate_total_efficiency(self):
+        if len(self.factors) != self.nFactors:
+            raise Exception(f"Cannot calculate total efficiency: Only have {len(self.factors)} out of {self.nFactors} factors!")
+        self.totalEfficiency = self.factors[0].histogram.Clone()
+        self.totalEfficiency.SetName(f"totalEfficiency{self.nFactors}Factors")
+        self.totalEfficiency.SetTitle(f"Total efficiency calculated from {self.nFactors} factors")
+        self.totalEfficiencyTitleRaw = self.factors[0].titleRaw
+        self.totalEfficiencyShortTitle = self.factors[0].shortTitle
+        for factor in self.factors[1:]:
+            self.totalEfficiency.Multiply(self.totalEfficiency, factor.histogram, 1, 1, "B")
+            self.totalEfficiencyTitleRaw += "#times%s" % (factor.titleRaw)
+            self.totalEfficiencyShortTitle += "#times%s" % (factor.shortTitle)
+
+    def draw_title(self, x, y, size=0.04):
+        self.totalEfficiencyTitle = r.TLatex()
+        self.totalEfficiencyTitle.SetTextSize(size)
+        self.totalEfficiencyTitle.SetTextAlign(22)
+        self.totalEfficiencyTitle.DrawLatexNDC(x, y, self.totalEfficiencyTitleRaw)
+
+    def replace_displayed_title(self, size=None, short=False):
+        # Replace the displayed title of the histogram with the TeX formatted title
+        self.totalEfficiency.SetTitle("")
+        if short:
+            self.totalEfficiencyTitle = r.TLatex()
+            self.totalEfficiencyTitle.SetTextSize(0.04)
+            self.totalEfficiencyTitle.SetTextAlign(22)
+            self.totalEfficiencyTitle.DrawLatexNDC(0.5, 0.95, self.totalEfficiencyShortTitle)
+            return
+        if size is None:
+            self.draw_title(0.5, 0.95, 0.08/self.nFactors)
+        else:
+            self.draw_title(0.5, 0.95, size)
+
+    def set_line_colors(self, color):
+        self.totalEfficiency.SetLineColor(color)
+        for factor in self.factors:
+            factor.histogram.SetLineColor(color)
+
+    def remove_stat_boxes(self):
+        self.totalEfficiency.SetStats(0)
+        for factor in self.factors:
+            factor.histogram.SetStats(0)
+
 class PtBin():
     """A single pT bin of an analysis"""
 
@@ -60,6 +137,10 @@ class Analysis():
         self.prepare_histograms()
         # Set the range of the mass axis for plotting and integrating reflected background
         self.massRange = [0., 4.]
+        # Get the integrated luminosity from the bc-selection-task
+        self.histLumi = self.fileTableMaker.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
+        self.lumi = self.histLumi.Integral() # 1/µb
+        print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
 
     def prepare_histograms(self):
         self.groupNameD0PtMatched = "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut_KPiFromD0"
@@ -431,6 +512,7 @@ class Analysis():
 
     def calculate_partial_efficiencies(self):
         """
+        Calculate factorized efficiencies for some predefined (hardcoded) factorizations
         Total efficiency = N(rec. matched D0 after all cuts) / N(gen. D0 after BC cuts)
         """
         # Prepare histograms
@@ -468,56 +550,26 @@ class Analysis():
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetName("PtMcMatchedInSelEventAfterTrackCutsAndPairCuts")
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
 
-        # List to hold total efficiencies calculated from different factorizations
-        self.totalEfficiencies = []
+        # List to hold factorized efficiencies
+        self.factorizedEfficiencies = []
 
         # Calculate efficiencies
-        self.effRecMatchedToGenInRecEvent = self.histD0PtMatchedFinalBins.Clone()
-        self.effRecMatchedToGenInRecEvent.Divide(self.histD0PtMatchedFinalBins, self.histD0PtGenInRecEvent, 1, 1, "B")
-        self.effRecMatchedToGenInRecEvent.SetName("effRecMatchedToGenInRecEvent")
-        self.effRecMatchedToGenInRecEvent.SetTitle("Reconstructed, matched D0 / MC gen D0 in reconstructed events")
+        eff = FactorizedEfficiency(2)
+        eff.add_factor("Reconstructed, matched D0 after all cuts", "MC gen D0 in reconstructed events", self.histD0PtMatchedFinalBins, self.histD0PtGenInRecEvent)
+        eff.add_factor("MC gen D0 in reconstructed events", "MC gen D0 in all events passing BC cuts", self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins)
+        eff.calculate_total_efficiency()
+        self.factorizedEfficiencies.append(eff)
+        del eff
 
-        self.effGenInRecEventToGen = self.histD0PtGenInRecEvent.Clone()
-        self.effGenInRecEventToGen.Divide(self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins, 1, 1, "B")
-        self.effGenInRecEventToGen.SetName("effGenInRecEventToGen")
-        self.effGenInRecEventToGen.SetTitle("MC gen D0 in reconstructed events / MC gen D0 in all gen events passing BC cuts")
-
-        totalEff = self.effRecMatchedToGenInRecEvent.Clone()
-        totalEff.Multiply(self.effRecMatchedToGenInRecEvent, self.effGenInRecEventToGen, 1, 1, "B")
-        totalEff.SetName("effTotal_GenInRecEventToGen*RecMatchedToGenInRecEvent")
-        totalEff.SetTitle("Total #varepsilon = effGenInRecEventToGen * effRecMatchedToGenInRecEvent")
-        self.totalEfficiencies.append(totalEff)
-        del totalEff
-
-        self.effGenInSelEventToGenInRecEvent = self.histD0PtGenInSelEvent.Clone()
-        self.effGenInSelEventToGenInRecEvent.Divide(self.histD0PtGenInSelEvent, self.histD0PtGenInRecEvent, 1, 1, "B")
-        self.effGenInSelEventToGenInRecEvent.SetName("effGenInSelEventToGenInRecEvent")
-        self.effGenInSelEventToGenInRecEvent.SetTitle("MC gen D0 in selected events / MC gen D0 in reconstructed events")
-
-        self.effRecMatchedInSelEventToGenInSelEvent = self.histD0PtMatchedInSelEvent.Clone()
-        self.effRecMatchedInSelEventToGenInSelEvent.Divide(self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEvent, 1, 1, "B")
-        self.effRecMatchedInSelEventToGenInSelEvent.SetName("effRecMatchedInSelEventToGenInSelEvent")
-        self.effRecMatchedInSelEventToGenInSelEvent.SetTitle("Reconstructed, matched D0 in selected events / MC gen D0 in selected events")
-
-        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent = self.histD0PtMatchedInSelEventAfterTrackCuts.Clone()
-        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent.Divide(self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEvent, 1, 1, "B")
-        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent.SetName("effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent")
-        self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent.SetTitle("Reconstructed, matched D0 in selected events, after track cuts / Reconstructed, matched D0 in selected events")
-
-        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Clone()
-        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts.Divide(self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts, 1, 1, "B")
-        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts.SetName("effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts")
-        self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0 in selected events, after track cuts and pair cuts / Reconstructed, matched D0 in selected events after track cuts")
-
-        totalEff = self.effGenInRecEventToGen.Clone()
-        totalEff.Multiply(totalEff, self.effGenInSelEventToGenInRecEvent, 1, 1, "B")
-        totalEff.Multiply(totalEff, self.effRecMatchedInSelEventToGenInSelEvent, 1, 1, "B")
-        totalEff.Multiply(totalEff, self.effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent, 1, 1, "B")
-        totalEff.Multiply(totalEff, self.effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts, 1, 1, "B")
-        totalEff.SetName("effTotal_GenInReEventToGen*GenInSelEventToGenInRecEvent*RecMatchedInSelEventToGenInSelEvent*RecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent*RecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts")
-        totalEff.SetTitle("Total #varepsilon = effGenInRecEventToGen * effGenInSelEventToGenInRecEvent * effRecMatchedInSelEventToGenInSelEvent * effRecMatchedInSelEventAfterTrackCutsToRecMatchedInSelEvent * effRecMatchedInSelEventAfterTrackCutsAndPairCutsToRecMatchedInSelEventAfterTrackCuts")
-        self.totalEfficiencies.append(totalEff)
-        del totalEff
+        eff = FactorizedEfficiency(5)
+        eff.add_factor("Gen. D0 in rec. evt.", "Gen. D0 in lumi", self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins)
+        eff.add_factor("Gen. D0 in sel. evt.", "Gen. D0 in rec. evt.", self.histD0PtGenInSelEvent, self.histD0PtGenInRecEvent)
+        eff.add_factor("Rec. matched D0 in sel. evt", "Gen. D0 in sel. evt.", self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEvent)
+        eff.add_factor("Rec. matched D0 in sel. evt. after track cuts", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEvent)
+        eff.add_factor("Rec. matched D0 in sel. evt. after track and pair cuts", "Rec. matched D0 in sel. evt. after track cuts", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts)
+        eff.calculate_total_efficiency()
+        self.factorizedEfficiencies.append(eff)
+        del eff
 
     def create_raw_yield_histogram(self):
         self.histRawYield = r.TH1F("histRawYield", "Raw yield /#Delta p_{T}, raw stat. errors", len(self.ptBins), np.asarray(self.ptBinsArray, 'd'))
@@ -542,11 +594,15 @@ class Analysis():
         r.gPad.SetLogy()
         self.canvasPtSpectrumPerEvent.Draw()
 
+    def calculate_raw_yield_per_lumi(self):
+        self.histRawYieldPerLumi = self.histRawYield.Clone()
+        self.histRawYieldPerLumi.SetName("histRawYieldPerLumi")
+        self.histRawYieldPerLumi.SetTitle("Raw yield /#Delta p_{T} L_{int}")
+        self.histRawYieldPerLumi.Scale(1 / self.lumi) # µb / GeVc^-1
+        self.histRawYieldPerLumi.Scale(1 / 1000.) # mb / GeVc^-1
+        self.histRawYieldPerLumi.GetYaxis().SetTitle("Raw D^{0} yield / L_{int} (1/GeV c^{-1})")
+
     def calculate_cross_section(self):
-        # Get the integrated luminosity from the bc-selection-task
-        self.histLumi = self.fileTableMaker.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
-        self.lumi = self.histLumi.Integral() # 1/µb
-        print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
         # Get the branching fraction from the PDG
         import pdg
         pdgApi = pdg.connect()
@@ -578,16 +634,16 @@ class Analysis():
         self.canvasEfficiency.cd(2)
         self.histD0PtMatched.Draw()
         self.canvasEfficiency.cd(3)
-        self.histRecOverGenFine.Draw()
+        self.effRecOverGenFine.Draw()
         self.canvasEfficiency.cd(4)
-        self.histRecOverGen.SetStats(0)
-        self.histRecOverGen.Draw()
+        self.effRecOverGen.SetStats(0)
+        self.effRecOverGen.Draw()
         if self.reweighting:
-            self.histRecOverGenWithoutReweighting.SetStats(0)
-            self.histRecOverGenWithoutReweighting.Draw("same")
+            self.effRecOverGenWithoutReweighting.SetStats(0)
+            self.effRecOverGenWithoutReweighting.Draw("same")
             self.legendEfficiency4 = r.TLegend(0.55, 0.15, 0.9, 0.3)
-            self.legendEfficiency4.AddEntry(self.histRecOverGen, "With reweighting")
-            self.legendEfficiency4.AddEntry(self.histRecOverGenWithoutReweighting, "Without reweighting")
+            self.legendEfficiency4.AddEntry(self.effRecOverGen, "With reweighting")
+            self.legendEfficiency4.AddEntry(self.effRecOverGenWithoutReweighting, "Without reweighting")
             self.legendEfficiency4.SetBorderSize(0)
             self.legendEfficiency4.SetFillStyle(0)
             self.legendEfficiency4.Draw()
