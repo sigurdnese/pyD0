@@ -1,13 +1,13 @@
 import ROOT as r
 import numpy as np
 
-class EfficiencyFactor():
+class Efficiency():
     def __init__(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
         self.histogram = histNumerator.Clone()
         self.histogram.Divide(histNumerator, histDenominator, 1, 1, "B")
         self.histogram.SetName(f"eff_{histNumerator.GetName()}_{histDenominator.GetName()}")
         self.histogram.SetTitle(f"eff_{histNumerator.GetName()}_{histDenominator.GetName()}")
-        self.titleRaw = "#frac{%s}{%s}" % (numeratorTitle, denominatorTitle)
+        self.title = "#frac{%s}{%s}" % (numeratorTitle, denominatorTitle)
         self.shortTitle = ""
 
     def draw_title(self, x, y, size=0.04, includeshort=False):
@@ -15,9 +15,9 @@ class EfficiencyFactor():
         self.title.SetTextSize(size)
         self.title.SetTextAlign(22)
         if includeshort:
-            self.title.DrawLatexNDC(x, y, self.titleRaw+"    "+self.shortTitle)
+            self.title.DrawLatexNDC(x, y, self.title+"    "+self.shortTitle)
         else:
-            self.title.DrawLatexNDC(x, y, self.titleRaw)
+            self.title.DrawLatexNDC(x, y, self.title)
 
     def replace_displayed_title(self, includeshort=False):
         # Replace the displayed title of the histogram with the TeX formatted title
@@ -32,7 +32,7 @@ class FactorizedEfficiency():
         self.factors = []
 
     def add_factor(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
-        self.factors.append(EfficiencyFactor(numeratorTitle, denominatorTitle, histNumerator, histDenominator))
+        self.factors.append(Efficiency(numeratorTitle, denominatorTitle, histNumerator, histDenominator))
         self.factors[-1].shortTitle = f"({len(self.factors)})"
 
     def calculate_total_efficiency(self):
@@ -41,18 +41,18 @@ class FactorizedEfficiency():
         self.totalEfficiency = self.factors[0].histogram.Clone()
         self.totalEfficiency.SetName(f"totalEfficiency{self.nFactors}Factors")
         self.totalEfficiency.SetTitle(f"Total efficiency calculated from {self.nFactors} factors")
-        self.totalEfficiencyTitleRaw = self.factors[0].titleRaw
+        self.totalEfficiencyTitle = self.factors[0].title
         self.totalEfficiencyShortTitle = self.factors[0].shortTitle
         for factor in self.factors[1:]:
             self.totalEfficiency.Multiply(self.totalEfficiency, factor.histogram, 1, 1, "B")
-            self.totalEfficiencyTitleRaw += "#times%s" % (factor.titleRaw)
+            self.totalEfficiencyTitle += "#times%s" % (factor.title)
             self.totalEfficiencyShortTitle += "#times%s" % (factor.shortTitle)
 
     def draw_title(self, x, y, size=0.04):
         self.totalEfficiencyTitle = r.TLatex()
         self.totalEfficiencyTitle.SetTextSize(size)
         self.totalEfficiencyTitle.SetTextAlign(22)
-        self.totalEfficiencyTitle.DrawLatexNDC(x, y, self.totalEfficiencyTitleRaw)
+        self.totalEfficiencyTitle.DrawLatexNDC(x, y, self.totalEfficiencyTitle)
 
     def replace_displayed_title(self, size=None, short=False):
         # Replace the displayed title of the histogram with the TeX formatted title
@@ -142,7 +142,7 @@ class Analysis():
         print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
 
     def prepare_histograms(self):
-        self.groupNameD0PtMatched = "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut_KPiFromD0"
+        self.groupNameD0PtMatched = "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_singleGapTrackCuts4_PtDepTauxyzprojCut_KPiFromD0"
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
         if self.isITSUPCMode == 2:
             self.histD0MassPt = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyMassPtHisto")
@@ -169,7 +169,7 @@ class Analysis():
         self.histD0PtMatched.SetName("histD0PtMatched")
         self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
         self.histD0PtYGenerated = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0Generated).FindObject("MyMcPtYHisto")
-        self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut_KPiFromD0Reflected").FindObject("MyMassPtHisto")
+        self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"{self.groupNameD0PtMatched}Reflected").FindObject("MyMassPtHisto")
             
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
@@ -270,7 +270,7 @@ class Analysis():
 
         # Fit the histogram
         print("---- Fitting data ----")
-        self.ptBins[bin].massPtSlice.Fit(fitFunc, "LR0")
+        self.ptBins[bin].fitResult = self.ptBins[bin].massPtSlice.Fit(fitFunc, "L0S", "", fitRange[0], fitRange[1])
 
         # Obtain the signal and background functions separately
         signalFunc = r.TF1(f"signalFunc_bin{bin}", "[0]*exp(-0.5*((x-[2])/[1])^2)", self.massRange[0], self.massRange[1])
@@ -403,7 +403,61 @@ class Analysis():
         self.histIsITSUPCModeEfficiency.SetTitle(f"IsITSUPCMode={self.isITSUPCMode} selection efficiency (est. from data)")
         self.histIsITSUPCModeEfficiency.Divide(self.histD0PtIsITSUPCModeAll)
 
-    def calculate_partial_efficiencies(self):
+    def calculate_track_cut_efficiencies(self, dqEfficiencyFilePath):
+        """
+        Calculate partial efficiencies for track cuts
+        """
+        file = r.TFile.Open(dqEfficiencyFilePath)
+        self.trackCutEfficiencies = []
+        # Reconstructed, matched D0 in selected events, but with no track or pair cuts. This is the denominator for all partial efficiencies due to track cuts
+        histDenom = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0").FindObject("Pt")
+        histD0PtKaonTPC = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_D0KaonTPC:noTrackCut_KPiFromD0").FindObject("Pt")
+        histD0PtKaonTPC = histD0PtKaonTPC.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTPC.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., kaon TPC n#sigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTPC, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtKaonTOF = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_D0KaonTOF:noTrackCut_KPiFromD0").FindObject("Pt")
+        histD0PtKaonTOF = histD0PtKaonTOF.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTOF.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., kaon TOF n#sigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTOF, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtEtaCut = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_D0CommonTrackCutsEta_KPiFromD0").FindObject("Pt")
+        histD0PtEtaCut = histD0PtEtaCut.Rebin(len(self.ptBinsArray) - 1, histD0PtEtaCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., track |#eta|<0.9", "Rec. matched D0 in sel evt.", histD0PtEtaCut, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtPtCut = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_D0CommonTrackCutsPt_KPiFromD0").FindObject("Pt")
+        histD0PtPtCut = histD0PtPtCut.Rebin(len(self.ptBinsArray) - 1, histD0PtPtCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., track p_{T}>0.5 GeV/c", "Rec. matched D0 in sel evt.", histD0PtPtCut, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtITSibCut = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_D0CommonTrackCutsITSib").FindObject("Pt")
+        histD0PtITSibCut = histD0PtITSibCut.Rebin(len(self.ptBinsArray) - 1, histD0PtITSibCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., track IsITSibAny=1", "Rec. matched D0 in sel evt.", histD0PtITSibCut, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtTPCnclsCut = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_D0CommonTrackCutsTPCncls").FindObject("Pt")
+        histD0PtTPCnclsCut = histD0PtTPCnclsCut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCnclsCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., track TPC nCls > 50", "Rec. matched D0 in sel evt.", histD0PtTPCnclsCut, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtDCAzCut = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_D0CommonTrackCutsDCAz").FindObject("Pt")
+        histD0PtDCAzCut = histD0PtDCAzCut.Rebin(len(self.ptBinsArray) - 1, histD0PtDCAzCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., track |DCAz| < 0.3 cm", "Rec. matched D0 in sel evt.", histD0PtDCAzCut, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtTPCchi2Cut = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_D0CommonTrackCutsTPCchi2").FindObject("Pt")
+        histD0PtTPCchi2Cut = histD0PtTPCchi2Cut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCchi2Cut.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., track TPCchi2 < 4", "Rec. matched D0 in sel evt.", histD0PtTPCchi2Cut, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+        histD0PtAllTrackCuts = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_D0KaonTPCTOF:noTrackCut_D0CommonTrackCuts").FindObject("Pt")
+        histD0PtAllTrackCuts = histD0PtAllTrackCuts.Rebin(len(self.ptBinsArray) - 1, histD0PtAllTrackCuts.GetName(), np.asarray(self.ptBinsArray, 'd'))
+        eff = Efficiency("Rec. matched D0 in sel evt., after all track cuts", "Rec. matched D0 in sel evt.", histD0PtAllTrackCuts, histDenom)
+        self.trackCutEfficiencies.append(eff)
+        del eff
+
+    def calculate_factorized_efficiencies(self):
         """
         Calculate factorized efficiencies for some predefined (hardcoded) factorizations
         Total efficiency = N(rec. matched D0 after all cuts) / N(gen. D0 after BC cuts)
@@ -430,12 +484,12 @@ class Analysis():
         self.histD0PtMatchedInSelEvent = self.histD0PtMatchedInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEvent", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtMatchedInSelEvent.SetTitle("Reconstructed, matched D0->Kpi in selected event, no track or pair cuts")
 
-        self.histD0PtMatchedInSelEventAfterTrackCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_KPiFromD0").FindObject("Pt")
+        self.histD0PtMatchedInSelEventAfterTrackCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_singleGapTrackCuts4_KPiFromD0").FindObject("Pt")
         self.histD0PtMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCuts.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEventAfterTrackCuts", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
 
         if not hasattr(self, 'histD0PtMatchedFinalBins'):
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut_KPiFromD0").FindObject("Pt")
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_singleGapTrackCuts4_PtDepTauxyzprojCut_KPiFromD0").FindObject("Pt")
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Rebin(len(self.ptBinsArray) - 1, "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", np.asarray(self.ptBinsArray, 'd'))
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
         else:
@@ -472,6 +526,7 @@ class Analysis():
             self.histRawYield.SetBinContent(i+1, bin.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
             self.histRawYield.SetBinError(i+1, bin.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nSignal)
+        self.histRawYield.SetStats(0)
 
     def calculate_spectrum_per_event(self):
         histEventsAfterCuts = self.fileTableReader.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("VtxZ")
@@ -583,6 +638,8 @@ class Analysis():
         self.canvasFitsYields.Divide(3, nRows, 0.002, 0.01)
 
         self.textBoxesFitsYields = []
+        self.linesFitrangeLow = []
+        self.linesFitrangeHigh = []
         for i, bin in enumerate(self.ptBins):
             self.histRawYield.SetBinContent(i+1, bin.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
@@ -620,6 +677,20 @@ class Analysis():
         self.histRawYield.Draw()
 
         self.canvasFitsYields.Draw()
+
+        for i, bin in enumerate(self.ptBins):
+            self.canvasFitsYields.cd(i+1)
+            # Lines to show fitting range
+            self.linesFitrangeLow.append(r.TLine(bin.fitRange[0], r.gPad.GetUymin(), bin.fitRange[0], r.gPad.GetUymax()))
+            self.linesFitrangeLow[i].SetLineColor(r.kBlack)
+            self.linesFitrangeLow[i].SetLineStyle(2)
+            self.linesFitrangeLow[i].SetLineWidth(1)
+            self.linesFitrangeLow[i].Draw()
+            self.linesFitrangeHigh.append(r.TLine(bin.fitRange[1], r.gPad.GetUymin(), bin.fitRange[1], r.gPad.GetUymax()))
+            self.linesFitrangeHigh[i].SetLineColor(r.kBlack)
+            self.linesFitrangeHigh[i].SetLineStyle(2)
+            self.linesFitrangeHigh[i].SetLineWidth(1)
+            self.linesFitrangeHigh[i].Draw()
 
     def draw_reflected_fits(self):
         # Figure out grid layout
