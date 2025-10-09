@@ -1,5 +1,151 @@
 import ROOT as r
 import numpy as np
+import matplotlib.pyplot as plt
+
+def run_by_run_tof_matching_efficiency(runListFull, runListNoUpcSettings, runListYesUpcSettings, runListExclude, directory, dataOrMc='mc'):
+    if dataOrMc not in {'mc', 'data'}:
+        raise Exception("Argument dataOrMc should be 'data' or 'mc'!")
+    # Sort runs based on UPC settings
+    runListFull = sorted(runListFull, key=lambda run: 1*int(run) if run in runListNoUpcSettings else 10*int(run) if run in runListYesUpcSettings else 100*int(run))
+    print(f"Processing {len(runListFull)} runs...")
+    listMeanHasTOF = []
+    listMeanHasTOFErrors = []
+    listColors = []
+    listTextColors = []
+    firstRunNoUpcSettings = True
+    dictColorsNoUpcSettings = {'mc': 'pink', 'data': 'xkcd:pale lime green'}
+    dictColorsYesUpcSettings = {'mc': 'lightblue', 'data': 'xkcd:pale olive green'}
+    dictTextColorsNoUpcSettings = {'mc': 'magenta', 'data': 'xkcd:frog green'}
+    dictTextColorsYesUpcSettings = {'mc': 'blue', 'data': 'xkcd:forrest green'}
+    # Open a test file to initialize the merged histograms
+    if dataOrMc == 'mc':
+        testFile = r.TFile.Open(f"{directory}/AnalysisResults_run{runListFull[0]}.root")
+        profileHasTOFMergedRunsNotExcludedNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedAllRunsNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedRunsNotExcludedYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedAllRunsYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+    else:
+        testFile = r.TFile.Open(f"{directory}/{runListFull[0]}/AnalysisResults.root")
+        profileHasTOFMergedRunsNotExcludedNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedAllRunsNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedRunsNotExcludedYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedAllRunsYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+
+    profileHasTOFMergedRunsNotExcludedNoUpcSettings.Reset()
+    profileHasTOFMergedRunsNotExcludedNoUpcSettings.SetName("profileHasTOFMergedRunsNotExcludedNoUpcSettings")
+    profileHasTOFMergedRunsNotExcludedNoUpcSettings.SetTitle("Runs with TOF and without UPC settings")
+    profileHasTOFMergedAllRunsNoUpcSettings.Reset()
+    profileHasTOFMergedAllRunsNoUpcSettings.SetName("profileHasTOFMergedAllRunsNoUpcSettings")
+    profileHasTOFMergedAllRunsNoUpcSettings.SetTitle("All runs without UPC settings")
+    profileHasTOFMergedRunsNotExcludedYesUpcSettings.Reset()
+    profileHasTOFMergedRunsNotExcludedYesUpcSettings.SetName("profileHasTOFMergedRunsNotExcludedYesUpcSettings")
+    profileHasTOFMergedRunsNotExcludedYesUpcSettings.SetTitle("Runs with TOF and without UPC settings")
+    profileHasTOFMergedAllRunsYesUpcSettings.Reset()
+    profileHasTOFMergedAllRunsYesUpcSettings.SetName("profileHasTOFMergedAllRunsYesUpcSettings")
+    profileHasTOFMergedAllRunsYesUpcSettings.SetTitle("All runs with UPC settings")
+    # Check the merged histograms
+    """
+    cTest = r.TCanvas("cTest", "cTest", 1400, 500)
+    cTest.Divide(3,1)
+    cTest.cd(1)
+    profileHasTOFMergedRunsNotExcludedNoUpcSettings.Draw()
+    cTest.cd(2)
+    profileHasTOFMergedAllRunsNoUpcSettings.Draw()
+    cTest.cd(3)
+    profileHasTOFMergedAllRunsYesUpcSettings.Draw()
+    cTest.Draw()
+    """
+
+    for i, run in enumerate(runListFull):
+        if dataOrMc == 'mc':
+            filepath = f"{directory}/AnalysisResults_run{run}.root"
+        else:
+            filepath = f"{directory}/{run}/AnalysisResults.root"
+
+        tmpFile = r.TFile.Open(filepath)
+        if not tmpFile or tmpFile.IsZombie():
+            print(f"Unable to open file for run {run}!")
+            continue
+
+        # Sanity check
+        if dataOrMc == 'mc':
+            tmpHistRunNumberCheck = tmpFile.Get("lumi-task/hCounterTCE")
+        else:
+            tmpHistRunNumberCheck = tmpFile.Get("analysis-event-selection/output").FindObject("Event_BeforeCuts").FindObject("VtxZ_Run")
+        if (tmpHistRunNumberCheck.GetNbinsX() != 1):
+            print(f"File for run {run} contains data from more than one run number!")
+            continue
+        if (tmpHistRunNumberCheck.GetXaxis().GetLabels().At(0).GetName() != run):
+            print(f"File for run {run} contains data on the wrong run!")
+
+        try:
+            if dataOrMc == 'mc':
+                tmpHist = tmpFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+            else:
+                tmpHist = tmpFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+        except:
+            print(f"Unable to get histograms for run {run}!")
+            continue
+
+        listMeanHasTOF.append(tmpHist.GetMean(2))
+        listMeanHasTOFErrors.append(tmpHist.GetMeanError(2))
+        if run in runListNoUpcSettings:
+            listColors.append(dictColorsNoUpcSettings[dataOrMc])
+            if run not in runListExclude:
+                profileHasTOFMergedRunsNotExcludedNoUpcSettings.Add(tmpHist)
+                listTextColors.append(dictTextColorsNoUpcSettings[dataOrMc])
+            else:
+                listTextColors.append('red')
+            profileHasTOFMergedAllRunsNoUpcSettings.Add(tmpHist)
+        elif run in runListYesUpcSettings:
+            listColors.append(dictColorsYesUpcSettings[dataOrMc])
+            if run not in runListExclude:
+                profileHasTOFMergedRunsNotExcludedYesUpcSettings.Add(tmpHist)
+                listTextColors.append(dictTextColorsYesUpcSettings[dataOrMc])
+            else:
+                listTextColors.append('red')
+            profileHasTOFMergedAllRunsYesUpcSettings.Add(tmpHist)
+        else:
+            listColors.append('gray')
+            if run not in runListExclude:
+                listTextColors.append('gray')
+            else:
+                listTextColors.append('red')
+        tmpFile.Close()
+
+    # Extract the <hasTOF> averaged over the different sets of runs
+    meanHasTOFMergedAllRunsNoUpcSettings = profileHasTOFMergedAllRunsNoUpcSettings.GetMean(2)
+    meanErrorHasTOFMergedAllRunsNoUpcSettings = profileHasTOFMergedAllRunsNoUpcSettings.GetMeanError(2)
+    print(f"All runs without UPC settings: <hasTOF> = {meanHasTOFMergedAllRunsNoUpcSettings:.4f} +- {meanErrorHasTOFMergedAllRunsNoUpcSettings:.4f}")
+    meanHasTOFMergedRunsNotExcludedNoUpcSettings = profileHasTOFMergedRunsNotExcludedNoUpcSettings.GetMean(2)
+    meanErrorHasTOFMergedRunsNotExcludedNoUpcSettings = profileHasTOFMergedRunsNotExcludedNoUpcSettings.GetMeanError(2)
+    print(f"Runs not excluded and without UPC settings: <hasTOF> = {meanHasTOFMergedRunsNotExcludedNoUpcSettings:.4f} +- {meanErrorHasTOFMergedRunsNotExcludedNoUpcSettings:.4f}")
+    meanHasTOFMergedAllRunsYesUpcSettings = profileHasTOFMergedAllRunsYesUpcSettings.GetMean(2)
+    meanErrorHasTOFMergedAllRunsYesUpcSettings = profileHasTOFMergedAllRunsYesUpcSettings.GetMeanError(2)
+    print(f"All runs with UPC settings: <hasTOF> = {meanHasTOFMergedAllRunsYesUpcSettings:.4f} +- {meanErrorHasTOFMergedAllRunsYesUpcSettings:.4f}")
+    meanHasTOFMergedRunsNotExcludedYesUpcSettings = profileHasTOFMergedRunsNotExcludedYesUpcSettings.GetMean(2)
+    meanErrorHasTOFMergedRunsNotExcludedYesUpcSettings = profileHasTOFMergedRunsNotExcludedYesUpcSettings.GetMeanError(2)
+    print(f"Runs not excluded and with UPC settings: <hasTOF> = {meanHasTOFMergedRunsNotExcludedYesUpcSettings:.4f} +- {meanErrorHasTOFMergedRunsNotExcludedYesUpcSettings:.4f}")
+
+    plt.figure(figsize=(15, 5))
+    if dataOrMc == 'mc':
+        plt.title("MC, reconstructed tracks before cuts")
+    else:
+        plt.title("Data, tracks with |DCAxy| < 0.1 cm, |DCAz| < 0.15 cm")
+    runAxis = np.arange(len(runListFull))
+    plt.bar(runAxis, listMeanHasTOF, yerr=listMeanHasTOFErrors, color=listColors, capsize=3)
+    for i, label in enumerate(runListFull):
+        plt.text(runAxis[i], -0.005, label, ha='center', va='top', color=listTextColors[i], rotation=90)
+    plt.xticks(runAxis, '', rotation=90)
+    plt.ylabel('Track <hasTOF>')
+    plt.hlines(meanHasTOFMergedAllRunsNoUpcSettings, -0.5, len(runListNoUpcSettings)-0.5, alpha=0.5, color=dictTextColorsNoUpcSettings[dataOrMc], linestyle='dashed')
+    plt.hlines(meanHasTOFMergedRunsNotExcludedNoUpcSettings, -0.5, len(runListNoUpcSettings)-0.5, alpha=0.5, color=dictTextColorsNoUpcSettings[dataOrMc])
+    plt.hlines(meanHasTOFMergedAllRunsYesUpcSettings, len(runListNoUpcSettings)-0.5, len(runListNoUpcSettings)+len(runListYesUpcSettings)-0.5, alpha=0.5, color=dictTextColorsYesUpcSettings[dataOrMc], linestyle='dashed')
+    plt.hlines(meanHasTOFMergedRunsNotExcludedYesUpcSettings, len(runListNoUpcSettings)-0.5, len(runListNoUpcSettings)+len(runListYesUpcSettings)-0.5, alpha=0.5, color=dictTextColorsYesUpcSettings[dataOrMc])
+    plt.tight_layout()
+    plt.show()
+    testFile.Close()
+    return runListFull, runAxis, listMeanHasTOF, listMeanHasTOFErrors
 
 class Efficiency():
     def __init__(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
@@ -156,34 +302,35 @@ class Analysis():
 
     def prepare_histograms(self):
         self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0"
+        print(f"Histogram group name for reconstructed, matched D0: {self.groupNameD0PtMatched}")
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
         if self.isITSUPCMode == 2:
             self.histD0MassPt = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}").FindObject("MyMassPtHisto")
+            self.histD0PtMatched = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("Pt")
+            self.histD0PtMatched.SetName("histD0PtMatched")
+            self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
+            self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"{self.groupNameD0PtMatched}Reflected").FindObject("MyMassPtHisto")
         else:
+            raise Exception(f"Choosing ITSUPCMode=0 or 1 is deprecated! This should be defined by the event cut used in the input files for the analysis!")
+            """
+            Choosing to discard events which were reconstructed with ITSUPCMode true/false will not change lumi, just the event reconstruction efficiency
+            The generator level MC D0 mesons will not be affected by this, only the reco level 
+            NOTE: This is a silly and error-prone way of doing this. I should probably just have dedicated runs over data/rec MC where I apply the cut, so that I have dedicated files for these event cuts.
+            """
             print(f"Getting histograms from multidim histograms w/ variable self.isITSUPCMode = {self.isITSUPCMode}")
             histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}").FindObject("MyMassPtIsITSUPCModeHisto")
             histD0MassPtIsITSUPCMode.GetZaxis().SetRange(self.isITSUPCMode+1, self.isITSUPCMode+1)
             self.histD0MassPt = histD0MassPtIsITSUPCMode.Project3D("yx")
             self.histD0MassPt.SetName(f"MyMassPtHisto_IsITSUPCMode={self.isITSUPCMode}")
-            """
-            ONLY DATA SHOULD HAVE THE IsITSUPCMode CUT APPLIED, SINCE MC SHOULD NOT BE USED TO CALCULATE THE EFFICIENCY FOR THAT SELECTION
             histD0PtIsITSUPCModeMatched = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("MyPtIsITSUPCModeHisto") 
             self.histD0PtMatched = histD0PtIsITSUPCModeMatched.ProjectionX(f"histD0PtMatched_IsITSUPCMode={self.isITSUPCMode}", self.isITSUPCMode+1, self.isITSUPCMode+1)
-            histD0PtYIsITSUPCModeGenerated = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0Generated).FindObject("MyMcPtYIsITSUPCModeHisto")
-            histD0PtYIsITSUPCModeGenerated.GetZaxis().SetRange(self.isITSUPCMode+1, self.isITSUPCMode+1)
-            self.histD0PtYGenerated = histD0PtYIsITSUPCModeGenerated.Project3D("yx")
-            self.histD0PtYGenerated.SetName(f"MyMcPtYHisto_IsITSUPCMode={self.isITSUPCMode}")
+            self.histD0PtMatched.SetTitle(f"Reconstructed, matched D0, event IsITSUPCMode={self.isITSUPCMode}")
             histD0MassPtIsITSUPCModeReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}_KPiFromD0Reflected").FindObject("MyMassPtIsITSUPCModeHisto")
             histD0MassPtIsITSUPCModeReflected.GetZaxis().SetRange(self.isITSUPCMode+1, self.isITSUPCMode+1)
             self.histD0MassPtReflected = histD0MassPtIsITSUPCModeReflected.Project3D("yx")
             self.histD0MassPtReflected.SetName(f"MyMcReflectedMassPtHisto_IsITSUPCMode={self.isITSUPCMode}")
-            """
-        self.histD0PtMatched = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("Pt")
-        self.histD0PtMatched.SetName("histD0PtMatched")
-        self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
+
         self.histD0PtYGenerated = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0Generated).FindObject("MyMcPtYHisto")
-        self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"{self.groupNameD0PtMatched}Reflected").FindObject("MyMassPtHisto")
-            
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.maxY) - 1
@@ -400,6 +547,8 @@ class Analysis():
             self.histCorrectedSpectrum = self.histCorrectedSpectrumReweighted
 
     def calculate_isitsupcmode_efficiency(self):
+        print(f"Calculating isITSUPCMode efficiency is deprecated")
+        """
         if self.isITSUPCMode == 2:
             raise Exception("Analysis was not initialized with an IsITSUPCMode value specified!")
         # Calculate the efficiency of the selection applied on IsITSUPCMode, which is to be multiplied by the correction factor obtained in calculate_correction
@@ -417,6 +566,7 @@ class Analysis():
         self.histIsITSUPCModeEfficiency.SetName("histIsITSUPCModeEfficiency")
         self.histIsITSUPCModeEfficiency.SetTitle(f"IsITSUPCMode={self.isITSUPCMode} selection efficiency (est. from data)")
         self.histIsITSUPCModeEfficiency.Divide(self.histD0PtIsITSUPCModeAll)
+        """
 
     def calculate_track_cut_efficiencies(self, dqEfficiencyFilePath, **kwargs):
         """
@@ -436,6 +586,9 @@ class Analysis():
             "fullCommonCut" : "D0CommonTrackCuts"
         }
         trackCutNames.update(kwargs)
+
+        if (self.isITSUPCMode != 2):
+            print(f"WARNING: This analysis has specified isITSUPCMode={self.isITSUPCMode}. Make sure that the reconstructed level histograms used here account for this!")
 
         r.TH1.AddDirectory(r.kFALSE)
         file = r.TFile.Open(dqEfficiencyFilePath)
@@ -495,6 +648,9 @@ class Analysis():
         Calculate factorized efficiencies for some predefined (hardcoded) factorizations
         Total efficiency = N(rec. matched D0 after all cuts) / N(gen. D0 after BC cuts)
         """
+        if (self.isITSUPCMode != 2):
+            print(f"WARNING: This analysis has specified isITSUPCMode={self.isITSUPCMode}. Make sure that the reconstructed level histograms used here account for this!")
+
         # Prepare histograms
         if not hasattr(self, 'histD0PtGeneratedFinalBins'):
             self.histD0PtGeneratedFinalBins = self.histD0PtGenerated.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
@@ -576,7 +732,7 @@ class Analysis():
         r.gPad.SetLogy()
         self.canvasPtSpectrumPerEvent.Draw()
 
-    def calculate_raw_yield_per_lumi(self):
+    def calculate_raw_yield_per_lumi(self, draw=True):
         self.histRawYieldPerLumi = self.histRawYield.Clone()
         self.histRawYieldPerLumi.SetName("histRawYieldPerLumi")
         self.histRawYieldPerLumi.SetTitle("Raw yield /#Delta p_{T} L_{int}")
@@ -584,11 +740,12 @@ class Analysis():
         self.histRawYieldPerLumi.Scale(1 / 1000.) # mb / GeVc^-1
         self.histRawYieldPerLumi.GetYaxis().SetTitle("Raw D^{0} yield / L_{int} (mb/GeV c^{-1})")
         self.histRawYieldPerLumi.SetStats(0)
-        self.canvasRawYieldPerLumi = r.TCanvas("canvasRawYieldPerLumi")
-        self.canvasRawYieldPerLumi.cd()
-        self.histRawYieldPerLumi.Draw()
-        r.gPad.SetLogy()
-        self.canvasRawYieldPerLumi.Draw()
+        if draw:
+            self.canvasRawYieldPerLumi = r.TCanvas("canvasRawYieldPerLumi")
+            self.canvasRawYieldPerLumi.cd()
+            self.histRawYieldPerLumi.Draw()
+            r.gPad.SetLogy()
+            self.canvasRawYieldPerLumi.Draw()
 
     def calculate_cross_section(self):
         # Get the branching fraction from the PDG
