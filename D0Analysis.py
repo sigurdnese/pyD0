@@ -2,57 +2,77 @@ import ROOT as r
 import numpy as np
 import matplotlib.pyplot as plt
 
-def run_by_run_tof_matching_efficiency(runListFull, runListNoUpcSettings, runListYesUpcSettings, runListExclude, directory, dataOrMc='mc'):
+def run_by_run_tof_matching_efficiency(runListFull, runListNo, runListYes, runListExclude, directory, dataOrMc='mc', showPlot=True, firstPtBin=0, lastPtBin=-1, firstEtaBin=0, lastEtaBin=-1, sortBy='yesno'):
+    """
+    Get <hasTOF> as a function of run number. Runs are placed in two categories: 'no' and 'yes', which may for example represent UPC settings, or CBT runlist.
+    The categories only affect visualization and sorting along the x-axis.
+    """
     if dataOrMc not in {'mc', 'data'}:
         raise Exception("Argument dataOrMc should be 'data' or 'mc'!")
-    # Sort runs based on UPC settings
-    runListFull = sorted(runListFull, key=lambda run: 1*int(run) if run in runListNoUpcSettings else 10*int(run) if run in runListYesUpcSettings else 100*int(run))
-    print(f"Processing {len(runListFull)} runs...")
+    if sortBy == 'yesno':
+        # Sort runs based on yes/no 
+        runListFull = sorted(runListFull, key=lambda run: 1*int(run) if run in runListNo else 10*int(run) if run in runListYes else 100*int(run))
+    elif sortBy == 'ir':
+        # Get IR per run
+        runIrDict = {}
+        with open('/home/sigurd/cernbox/PbPb23_singlegap/LHC23_PbPb_pass4_train355821/runInfo.txt', mode='r') as file:
+            next(file) # skip header
+            for line in file:
+                key, value = line.strip().split()
+                runIrDict[key] = float(value)
+        runListFull = sorted(runListFull, key=lambda run: runIrDict[run])
+
+    print(f"Processing {len(runListFull)} runs ({dataOrMc})...")
     listMeanHasTOF = []
     listMeanHasTOFErrors = []
     listColors = []
     listTextColors = []
-    firstRunNoUpcSettings = True
-    dictColorsNoUpcSettings = {'mc': 'pink', 'data': 'xkcd:pale lime green'}
-    dictColorsYesUpcSettings = {'mc': 'lightblue', 'data': 'xkcd:pale olive green'}
-    dictTextColorsNoUpcSettings = {'mc': 'magenta', 'data': 'xkcd:frog green'}
-    dictTextColorsYesUpcSettings = {'mc': 'blue', 'data': 'xkcd:forrest green'}
+    dictColors = {'mcno': 'xkcd:pale lime green', 'datano': 'xkcd:pale cyan', 'mcyes': 'xkcd:pale olive green', 'datayes': 'xkcd:pastel blue', 'mcpartial': 'lightgray', 'datapartial': 'gray'}
+    dictTextColors = {'mcno': 'xkcd:frog green', 'datano': 'xkcd:bright sky blue', 'mcyes': 'xkcd:forrest green', 'datayes': 'xkcd:cerulean', 'mcpartial': 'lightgray', 'datapartial': 'gray'}
     # Open a test file to initialize the merged histograms
     if dataOrMc == 'mc':
         testFile = r.TFile.Open(f"{directory}/AnalysisResults_run{runListFull[0]}.root")
-        profileHasTOFMergedRunsNotExcludedNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
-        profileHasTOFMergedAllRunsNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
-        profileHasTOFMergedRunsNotExcludedYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
-        profileHasTOFMergedAllRunsYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedRunsNotExcludedNo = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFMap")
+        profileHasTOFMergedAllRunsNo = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFMap")
+        profileHasTOFMergedRunsNotExcludedYes = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFMap")
+        profileHasTOFMergedAllRunsYes = testFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFMap")
     else:
         testFile = r.TFile.Open(f"{directory}/{runListFull[0]}/AnalysisResults.root")
-        profileHasTOFMergedRunsNotExcludedNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
-        profileHasTOFMergedAllRunsNoUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
-        profileHasTOFMergedRunsNotExcludedYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
-        profileHasTOFMergedAllRunsYesUpcSettings = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+        profileHasTOFMergedRunsNotExcludedNo = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFMap")
+        profileHasTOFMergedAllRunsNo = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFMap")
+        profileHasTOFMergedRunsNotExcludedYes = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFMap")
+        profileHasTOFMergedAllRunsYes = testFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFMap")
 
-    profileHasTOFMergedRunsNotExcludedNoUpcSettings.Reset()
-    profileHasTOFMergedRunsNotExcludedNoUpcSettings.SetName("profileHasTOFMergedRunsNotExcludedNoUpcSettings")
-    profileHasTOFMergedRunsNotExcludedNoUpcSettings.SetTitle("Runs with TOF and without UPC settings")
-    profileHasTOFMergedAllRunsNoUpcSettings.Reset()
-    profileHasTOFMergedAllRunsNoUpcSettings.SetName("profileHasTOFMergedAllRunsNoUpcSettings")
-    profileHasTOFMergedAllRunsNoUpcSettings.SetTitle("All runs without UPC settings")
-    profileHasTOFMergedRunsNotExcludedYesUpcSettings.Reset()
-    profileHasTOFMergedRunsNotExcludedYesUpcSettings.SetName("profileHasTOFMergedRunsNotExcludedYesUpcSettings")
-    profileHasTOFMergedRunsNotExcludedYesUpcSettings.SetTitle("Runs with TOF and without UPC settings")
-    profileHasTOFMergedAllRunsYesUpcSettings.Reset()
-    profileHasTOFMergedAllRunsYesUpcSettings.SetName("profileHasTOFMergedAllRunsYesUpcSettings")
-    profileHasTOFMergedAllRunsYesUpcSettings.SetTitle("All runs with UPC settings")
+    profileHasTOFMergedRunsNotExcludedNo = profileHasTOFMergedRunsNotExcludedNo.Project3DProfile('xy') # pT, eta
+    profileHasTOFMergedRunsNotExcludedNo = profileHasTOFMergedRunsNotExcludedNo.ProfileY('profileHasTOFMergedRunsNotExcludedNo', firstEtaBin, lastEtaBin) # pT
+    profileHasTOFMergedRunsNotExcludedNo.Reset()
+    profileHasTOFMergedRunsNotExcludedNo.SetName("profileHasTOFMergedRunsNotExcludedNo")
+    profileHasTOFMergedRunsNotExcludedNo.SetTitle("Runs with TOF and 'no'")
+    profileHasTOFMergedAllRunsNo = profileHasTOFMergedAllRunsNo.Project3DProfile('xy') # pT, eta
+    profileHasTOFMergedAllRunsNo = profileHasTOFMergedAllRunsNo.ProfileY('profileHasTOFMergedAllRunsNo', firstEtaBin, lastEtaBin) # pT
+    profileHasTOFMergedAllRunsNo.Reset()
+    profileHasTOFMergedAllRunsNo.SetName("profileHasTOFMergedAllRunsNo")
+    profileHasTOFMergedAllRunsNo.SetTitle("All runs 'no'")
+    profileHasTOFMergedRunsNotExcludedYes = profileHasTOFMergedRunsNotExcludedYes.Project3DProfile('xy') # pT, eta
+    profileHasTOFMergedRunsNotExcludedYes = profileHasTOFMergedRunsNotExcludedYes.ProfileY('profileHasTOFMergedRunsNotExcludedYes', firstEtaBin, lastEtaBin) # pT
+    profileHasTOFMergedRunsNotExcludedYes.Reset()
+    profileHasTOFMergedRunsNotExcludedYes.SetName("profileHasTOFMergedRunsNotExcludedYes")
+    profileHasTOFMergedRunsNotExcludedYes.SetTitle("Runs with TOF and 'yes'")
+    profileHasTOFMergedAllRunsYes = profileHasTOFMergedAllRunsYes.Project3DProfile('xy') # pT, eta
+    profileHasTOFMergedAllRunsYes = profileHasTOFMergedAllRunsYes.ProfileY('profileHasTOFMergedAllRunsYes', firstEtaBin, lastEtaBin) # pT
+    profileHasTOFMergedAllRunsYes.Reset()
+    profileHasTOFMergedAllRunsYes.SetName("profileHasTOFMergedAllRunsYes")
+    profileHasTOFMergedAllRunsYes.SetTitle("All runs 'yes'")
     # Check the merged histograms
     """
     cTest = r.TCanvas("cTest", "cTest", 1400, 500)
     cTest.Divide(3,1)
     cTest.cd(1)
-    profileHasTOFMergedRunsNotExcludedNoUpcSettings.Draw()
+    profileHasTOFMergedRunsNotExcludedNo.Draw()
     cTest.cd(2)
-    profileHasTOFMergedAllRunsNoUpcSettings.Draw()
+    profileHasTOFMergedAllRunsNo.Draw()
     cTest.cd(3)
-    profileHasTOFMergedAllRunsYesUpcSettings.Draw()
+    profileHasTOFMergedAllRunsYes.Draw()
     cTest.Draw()
     """
 
@@ -80,72 +100,89 @@ def run_by_run_tof_matching_efficiency(runListFull, runListNoUpcSettings, runLis
 
         try:
             if dataOrMc == 'mc':
-                tmpHist = tmpFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFvsPin")
+                tmpHist = tmpFile.Get("analysis-track-selection/output").FindObject("AssocsBarrel_BeforeCuts").FindObject("MyTrackHasTOFMap")
             else:
-                tmpHist = tmpFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFvsPin")
+                tmpHist = tmpFile.Get("analysis-track-selection/output").FindObject("TrackBarrel_MyStandardPrimaryTrackDCACut").FindObject("MyTrackHasTOFMap")
         except:
             print(f"Unable to get histograms for run {run}!")
             continue
+        minPt = tmpHist.GetXaxis().GetBinLowEdge(firstPtBin)
+        maxPt = tmpHist.GetXaxis().GetBinUpEdge(lastPtBin)
+        minEta = tmpHist.GetYaxis().GetBinLowEdge(firstEtaBin)
+        maxEta = tmpHist.GetYaxis().GetBinUpEdge(lastEtaBin)
+        tmpHist = tmpHist.Project3DProfile('xy') # pT, eta
+        tmpHist = tmpHist.ProfileY('tmpHist', firstEtaBin, lastEtaBin) # pT
+        tmpHist.GetXaxis().SetRange(firstPtBin, lastPtBin)
 
         listMeanHasTOF.append(tmpHist.GetMean(2))
         listMeanHasTOFErrors.append(tmpHist.GetMeanError(2))
-        if run in runListNoUpcSettings:
-            listColors.append(dictColorsNoUpcSettings[dataOrMc])
+        if run in runListNo:
+            listColors.append(dictColors[dataOrMc+'no'])
             if run not in runListExclude:
-                profileHasTOFMergedRunsNotExcludedNoUpcSettings.Add(tmpHist)
-                listTextColors.append(dictTextColorsNoUpcSettings[dataOrMc])
+                profileHasTOFMergedRunsNotExcludedNo.Add(tmpHist)
+                listTextColors.append(dictTextColors[dataOrMc+'no'])
             else:
                 listTextColors.append('red')
-            profileHasTOFMergedAllRunsNoUpcSettings.Add(tmpHist)
-        elif run in runListYesUpcSettings:
-            listColors.append(dictColorsYesUpcSettings[dataOrMc])
+            profileHasTOFMergedAllRunsNo.Add(tmpHist)
+        elif run in runListYes:
+            listColors.append(dictColors[dataOrMc+'yes'])
             if run not in runListExclude:
-                profileHasTOFMergedRunsNotExcludedYesUpcSettings.Add(tmpHist)
-                listTextColors.append(dictTextColorsYesUpcSettings[dataOrMc])
+                profileHasTOFMergedRunsNotExcludedYes.Add(tmpHist)
+                listTextColors.append(dictTextColors[dataOrMc+'yes'])
             else:
                 listTextColors.append('red')
-            profileHasTOFMergedAllRunsYesUpcSettings.Add(tmpHist)
+            profileHasTOFMergedAllRunsYes.Add(tmpHist)
         else:
-            listColors.append('gray')
+            listColors.append(dictColors[dataOrMc+'partial'])
             if run not in runListExclude:
-                listTextColors.append('gray')
+                listTextColors.append(dictTextColors[dataOrMc+'yes'])
             else:
                 listTextColors.append('red')
         tmpFile.Close()
 
     # Extract the <hasTOF> averaged over the different sets of runs
-    meanHasTOFMergedAllRunsNoUpcSettings = profileHasTOFMergedAllRunsNoUpcSettings.GetMean(2)
-    meanErrorHasTOFMergedAllRunsNoUpcSettings = profileHasTOFMergedAllRunsNoUpcSettings.GetMeanError(2)
-    print(f"All runs without UPC settings: <hasTOF> = {meanHasTOFMergedAllRunsNoUpcSettings:.4f} +- {meanErrorHasTOFMergedAllRunsNoUpcSettings:.4f}")
-    meanHasTOFMergedRunsNotExcludedNoUpcSettings = profileHasTOFMergedRunsNotExcludedNoUpcSettings.GetMean(2)
-    meanErrorHasTOFMergedRunsNotExcludedNoUpcSettings = profileHasTOFMergedRunsNotExcludedNoUpcSettings.GetMeanError(2)
-    print(f"Runs not excluded and without UPC settings: <hasTOF> = {meanHasTOFMergedRunsNotExcludedNoUpcSettings:.4f} +- {meanErrorHasTOFMergedRunsNotExcludedNoUpcSettings:.4f}")
-    meanHasTOFMergedAllRunsYesUpcSettings = profileHasTOFMergedAllRunsYesUpcSettings.GetMean(2)
-    meanErrorHasTOFMergedAllRunsYesUpcSettings = profileHasTOFMergedAllRunsYesUpcSettings.GetMeanError(2)
-    print(f"All runs with UPC settings: <hasTOF> = {meanHasTOFMergedAllRunsYesUpcSettings:.4f} +- {meanErrorHasTOFMergedAllRunsYesUpcSettings:.4f}")
-    meanHasTOFMergedRunsNotExcludedYesUpcSettings = profileHasTOFMergedRunsNotExcludedYesUpcSettings.GetMean(2)
-    meanErrorHasTOFMergedRunsNotExcludedYesUpcSettings = profileHasTOFMergedRunsNotExcludedYesUpcSettings.GetMeanError(2)
-    print(f"Runs not excluded and with UPC settings: <hasTOF> = {meanHasTOFMergedRunsNotExcludedYesUpcSettings:.4f} +- {meanErrorHasTOFMergedRunsNotExcludedYesUpcSettings:.4f}")
+    profileHasTOFMergedAllRunsNo.GetXaxis().SetRange(firstPtBin, lastPtBin)
+    meanHasTOFMergedAllRunsNo = profileHasTOFMergedAllRunsNo.GetMean(2)
+    meanErrorHasTOFMergedAllRunsNo = profileHasTOFMergedAllRunsNo.GetMeanError(2)
+    print(f"All runs 'no': <hasTOF> = {meanHasTOFMergedAllRunsNo:.4f} +- {meanErrorHasTOFMergedAllRunsNo:.4f}")
+    profileHasTOFMergedRunsNotExcludedNo.GetXaxis().SetRange(firstPtBin, lastPtBin)
+    meanHasTOFMergedRunsNotExcludedNo = profileHasTOFMergedRunsNotExcludedNo.GetMean(2)
+    meanErrorHasTOFMergedRunsNotExcludedNo = profileHasTOFMergedRunsNotExcludedNo.GetMeanError(2)
+    if runListExclude:
+        print(f"Runs not excluded and 'no: <hasTOF> = {meanHasTOFMergedRunsNotExcludedNo:.4f} +- {meanErrorHasTOFMergedRunsNotExcludedNo:.4f}")
+    profileHasTOFMergedAllRunsYes.GetXaxis().SetRange(firstPtBin, lastPtBin)
+    meanHasTOFMergedAllRunsYes = profileHasTOFMergedAllRunsYes.GetMean(2)
+    meanErrorHasTOFMergedAllRunsYes = profileHasTOFMergedAllRunsYes.GetMeanError(2)
+    print(f"All runs 'yes': <hasTOF> = {meanHasTOFMergedAllRunsYes:.4f} +- {meanErrorHasTOFMergedAllRunsYes:.4f}")
+    profileHasTOFMergedRunsNotExcludedYes.GetXaxis().SetRange(firstPtBin, lastPtBin)
+    meanHasTOFMergedRunsNotExcludedYes = profileHasTOFMergedRunsNotExcludedYes.GetMean(2)
+    meanErrorHasTOFMergedRunsNotExcludedYes = profileHasTOFMergedRunsNotExcludedYes.GetMeanError(2)
+    if runListExclude:
+        print(f"Runs not excluded and 'yes': <hasTOF> = {meanHasTOFMergedRunsNotExcludedYes:.4f} +- {meanErrorHasTOFMergedRunsNotExcludedYes:.4f}")
 
-    plt.figure(figsize=(15, 5))
-    if dataOrMc == 'mc':
-        plt.title("MC, reconstructed tracks before cuts")
-    else:
-        plt.title("Data, tracks with |DCAxy| < 0.1 cm, |DCAz| < 0.15 cm")
     runAxis = np.arange(len(runListFull))
-    plt.bar(runAxis, listMeanHasTOF, yerr=listMeanHasTOFErrors, color=listColors, capsize=3)
-    for i, label in enumerate(runListFull):
-        plt.text(runAxis[i], -0.005, label, ha='center', va='top', color=listTextColors[i], rotation=90)
-    plt.xticks(runAxis, '', rotation=90)
-    plt.ylabel('Track <hasTOF>')
-    plt.hlines(meanHasTOFMergedAllRunsNoUpcSettings, -0.5, len(runListNoUpcSettings)-0.5, alpha=0.5, color=dictTextColorsNoUpcSettings[dataOrMc], linestyle='dashed')
-    plt.hlines(meanHasTOFMergedRunsNotExcludedNoUpcSettings, -0.5, len(runListNoUpcSettings)-0.5, alpha=0.5, color=dictTextColorsNoUpcSettings[dataOrMc])
-    plt.hlines(meanHasTOFMergedAllRunsYesUpcSettings, len(runListNoUpcSettings)-0.5, len(runListNoUpcSettings)+len(runListYesUpcSettings)-0.5, alpha=0.5, color=dictTextColorsYesUpcSettings[dataOrMc], linestyle='dashed')
-    plt.hlines(meanHasTOFMergedRunsNotExcludedYesUpcSettings, len(runListNoUpcSettings)-0.5, len(runListNoUpcSettings)+len(runListYesUpcSettings)-0.5, alpha=0.5, color=dictTextColorsYesUpcSettings[dataOrMc])
-    plt.tight_layout()
-    plt.show()
+    cutInfoString = ""
+    if firstPtBin != -1 or lastPtBin != -1 or firstEtaBin != -1 or lastEtaBin != -1:
+        cutInfoString = f". {minPt:.1f} < pT < {maxPt:.1f} GeV/c, {minEta:.1f} < $\eta$ < {maxEta:.1f}"
+    if showPlot:
+        plt.figure(figsize=(15, 5))
+        if dataOrMc == 'mc':
+            plt.title(f"MC, reconstructed tracks before cuts")
+        else:
+            plt.title(f"Data, tracks with |DCAxy| < 0.1 cm, |DCAz| < 0.15 cm")
+        plt.bar(runAxis, listMeanHasTOF, yerr=listMeanHasTOFErrors, color=listColors, capsize=3)
+        for i, label in enumerate(runListFull):
+            plt.text(runAxis[i], -0.005, label, ha='center', va='top', color=listTextColors[i], rotation=90)
+        plt.xticks(runAxis, '', rotation=90)
+        plt.ylabel('Track <hasTOF>')
+        plt.hlines(meanHasTOFMergedAllRunsNo, -0.5, len(runListNo)-0.5, alpha=0.5, color=dictTextColors[dataOrMc+'no'], linestyle='dashed')
+        plt.hlines(meanHasTOFMergedRunsNotExcludedNo, -0.5, len(runListNo)-0.5, alpha=0.5, color=dictTextColors[dataOrMc+'no'])
+        plt.hlines(meanHasTOFMergedAllRunsYes, len(runListNo)-0.5, len(runListNo)+len(runListYes)-0.5, alpha=0.5, color=dictTextColors[dataOrMc+'yes'], linestyle='dashed')
+        plt.hlines(meanHasTOFMergedRunsNotExcludedYes, len(runListNo)-0.5, len(runListNo)+len(runListYes)-0.5, alpha=0.5, color=dictTextColors[dataOrMc+'yes'])
+        plt.tight_layout()
+        plt.show()
     testFile.Close()
-    return runListFull, runAxis, listMeanHasTOF, listMeanHasTOFErrors
+    return {'runList': runListFull, 'runAxis': runAxis, 'values': listMeanHasTOF, 'errors': listMeanHasTOFErrors, 'colors': listColors, 'textColors': listTextColors, 'dictColors': dictColors, 'minPt': minPt, 'maxPt': maxPt, 'minEta': minEta, 'maxEta': maxEta}
 
 class Efficiency():
     def __init__(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
