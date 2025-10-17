@@ -338,6 +338,7 @@ class Analysis():
         print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
 
     def prepare_histograms(self):
+        # TODO: move the reco signal name to _KPiFromD0FS when ready
         self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0"
         print(f"Histogram group name for reconstructed, matched D0: {self.groupNameD0PtMatched}")
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
@@ -703,8 +704,15 @@ class Analysis():
         lowerYBin = self.histD0PtYGenInSelEvent.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenInSelEvent.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenInSelEvent = self.histD0PtYGenInSelEvent.ProjectionX(f"projPtMcGenInSelEvent_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
-        self.histD0PtGenInSelEvent.SetTitle(f"Generated D0 in reconstructed event, {self.minY} < y < {self.maxY}")
+        self.histD0PtGenInSelEvent.SetTitle(f"Generated D0 in selected event, {self.minY} < y < {self.maxY}")
         self.histD0PtGenInSelEvent = self.histD0PtGenInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInSelEventFinalBins", np.asarray(self.ptBinsArray, 'd'))
+
+        self.histD0PtYGenInSelEventDaughtersInAcc = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject("MCTruthGenSelDaughtersInAcc_KPiFromD0FS").FindObject("MyMcPtYHisto")
+        lowerYBin = self.histD0PtYGenInSelEventDaughtersInAcc.GetYaxis().FindBin(self.minY)
+        upperYBin = self.histD0PtYGenInSelEventDaughtersInAcc.GetYaxis().FindBin(self.maxY) - 1
+        self.histD0PtGenInSelEventDaughtersInAcc = self.histD0PtYGenInSelEventDaughtersInAcc.ProjectionX(f"projPtMcGenInSelEventDaughtersInAcc_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
+        self.histD0PtGenInSelEventDaughtersInAcc.SetTitle(f"Generated D0 in selected event with both daughters in acceptance, {self.minY} < y < {self.maxY}")
+        self.histD0PtGenInSelEventDaughtersInAcc = self.histD0PtGenInSelEventDaughtersInAcc.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInSelEventDaughtersInAccFinalBins", np.asarray(self.ptBinsArray, 'd'))
 
         self.histD0PtMatchedInSelEvent = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0").FindObject("Pt")
         self.histD0PtMatchedInSelEvent = self.histD0PtMatchedInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEvent", np.asarray(self.ptBinsArray, 'd'))
@@ -734,10 +742,11 @@ class Analysis():
         self.factorizedEfficiencies.append(eff)
         del eff
 
-        eff = FactorizedEfficiency(5)
+        eff = FactorizedEfficiency(6)
         eff.add_factor("Gen. D0 in rec. evt.", "Gen. D0 in lumi", self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins)
         eff.add_factor("Gen. D0 in sel. evt.", "Gen. D0 in rec. evt.", self.histD0PtGenInSelEvent, self.histD0PtGenInRecEvent)
-        eff.add_factor("Rec. matched D0 in sel. evt", "Gen. D0 in sel. evt.", self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEvent)
+        eff.add_factor("Gen. D0 in rec. evt., daughters in acc.", "Gen. D0 in sel. evt.", self.histD0PtGenInSelEventDaughtersInAcc, self.histD0PtGenInSelEvent)
+        eff.add_factor("Rec. matched D0 in sel. evt", "Gen. D0 in sel. evt., daughters in acc.", self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEventDaughtersInAcc)
         eff.add_factor("Rec. matched D0 in sel. evt. after track cuts", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEvent)
         eff.add_factor("Rec. matched D0 in sel. evt. after track and pair cuts", "Rec. matched D0 in sel. evt. after track cuts", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts)
         eff.calculate_total_efficiency()
