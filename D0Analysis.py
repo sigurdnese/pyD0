@@ -1,6 +1,426 @@
 import ROOT as r
+import hist
+import uproot
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+def compare_efficiency_upcmode(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorFilepathNo, denominatorFilepathNo, numeratorFilepathYes, denominatorFilepathYes):
+    """
+    Compare efficiencies between event with and without ITS UPC Mode reconstruction flag
+    """
+    binsPt = [0., 0.4, 0.8, 1.2, 1.6, 2., 2.4, 2.8, 3.2, 3.6, 4., 4.4, 4.8, 5.2, 5.6, 6., 8., 10., 12., 16., 20.]
+    genHistName = 'MyMcPtYHisto'
+    recHistName = 'Pt'
+
+    fileYesNumerator = r.TFile.Open(numeratorFilepathYes)
+    fileNoNumerator = r.TFile.Open(numeratorFilepathNo)
+    fileYesDenominator = r.TFile.Open(denominatorFilepathYes)
+    fileNoDenominator = r.TFile.Open(denominatorFilepathNo)
+
+    # Check that the files are what we think
+    testHist = fileYesNumerator.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("IsITSUPCMode")
+    if testHist.GetMean() != 1:
+        raise Exception(f"File {numeratorFilepathYes} is not purely IsITSUPCMode=True!")
+    testHist = fileYesDenominator.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("IsITSUPCMode")
+    if testHist.GetMean() != 1:
+        raise Exception(f"File {denominatorFilepathYes} is not purely IsITSUPCMode=True!")
+    testHist = fileNoNumerator.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("IsITSUPCMode")
+    if testHist.GetMean() != 0:
+        raise Exception(f"File {numeratorFilepathNo} is not purely IsITSUPCMode=False!")
+    testHist = fileNoDenominator.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("IsITSUPCMode")
+    if testHist.GetMean() != 0:
+        raise Exception(f"File {denominatorFilepathNo} is not purely IsITSUPCMode=False!")
+
+    # Obtain histograms
+    if 'Gen' in numeratorString:
+        histYesNumeratorPtY = fileYesNumerator.Get("analysis-asymmetric-pairing/output").FindObject(numeratorString).FindObject(genHistName)
+        lowerYBin = histYesNumeratorPtY.GetYaxis().FindBin(-0.9)
+        upperYBin = histYesNumeratorPtY.GetYaxis().FindBin(0.9) - 1
+        histYesNumeratorPt = histYesNumeratorPtY.ProjectionX(f"yesProjPtMcGen_y_{-0.9}_{0.9}", lowerYBin, upperYBin)
+        histNoNumeratorPtY = fileNoNumerator.Get("analysis-asymmetric-pairing/output").FindObject(numeratorString).FindObject(genHistName)
+        lowerYBin = histNoNumeratorPtY.GetYaxis().FindBin(-0.9)
+        upperYBin = histNoNumeratorPtY.GetYaxis().FindBin(0.9) - 1
+        histNoNumeratorPt = histNoNumeratorPtY.ProjectionX(f"noProjPtMcGen_y_{-0.9}_{0.9}", lowerYBin, upperYBin)
+    else:
+        histYesNumeratorPt = fileYesNumerator.Get("analysis-asymmetric-pairing/output").FindObject(numeratorString).FindObject(recHistName)
+        histNoNumeratorPt = fileNoNumerator.Get("analysis-asymmetric-pairing/output").FindObject(numeratorString).FindObject(recHistName)
+    histYesNumeratorPt = histYesNumeratorPt.Rebin(len(binsPt) - 1, "histYesNumeratorPt", np.asarray(binsPt, 'd'))
+    histNoNumeratorPt = histNoNumeratorPt.Rebin(len(binsPt) - 1, "histNoNumeratorPt", np.asarray(binsPt, 'd'))
+
+    if 'Gen' in denominatorString:
+        histYesDenominatorPtY = fileYesDenominator.Get("analysis-asymmetric-pairing/output").FindObject(denominatorString).FindObject(genHistName)
+        lowerYBin = histYesDenominatorPtY.GetYaxis().FindBin(-0.9)
+        upperYBin = histYesDenominatorPtY.GetYaxis().FindBin(0.9) - 1
+        histYesDenominatorPt = histYesDenominatorPtY.ProjectionX(f"yesProjPtMcGen_y_{-0.9}_{0.9}", lowerYBin, upperYBin)
+        histNoDenominatorPtY = fileNoDenominator.Get("analysis-asymmetric-pairing/output").FindObject(denominatorString).FindObject(genHistName)
+        lowerYBin = histNoDenominatorPtY.GetYaxis().FindBin(-0.9)
+        upperYBin = histNoDenominatorPtY.GetYaxis().FindBin(0.9) - 1
+        histNoDenominatorPt = histNoDenominatorPtY.ProjectionX(f"noProjPtMcGen_y_{-0.9}_{0.9}", lowerYBin, upperYBin)
+    else:
+        histYesDenominatorPt = fileYesDenominator.Get("analysis-asymmetric-pairing/output").FindObject(denominatorString).FindObject(recHistName)
+        histNoDenominatorPt = fileNoDenominator.Get("analysis-asymmetric-pairing/output").FindObject(denominatorString).FindObject(recHistName)
+    histYesDenominatorPt = histYesDenominatorPt.Rebin(len(binsPt) - 1, "histYesDenominatorPt", np.asarray(binsPt, 'd'))
+    histNoDenominatorPt = histNoDenominatorPt.Rebin(len(binsPt) - 1, "histNoDenominatorPt", np.asarray(binsPt, 'd'))
+    
+    effNo = Efficiency(numeratorTitle, denominatorTitle, histNoNumeratorPt, histNoDenominatorPt)
+    effNo.take_ownership()
+    effYes = Efficiency(numeratorTitle, denominatorTitle, histYesNumeratorPt, histYesDenominatorPt)
+    effYes.take_ownership()
+    
+    # Plotting
+    cCompareYesNo = r.TCanvas()
+    r.SetOwnership(cCompareYesNo, False)
+    cCompareYesNo.cd()
+    effNo.histogram.Draw()
+    effNo.histogram.SetStats(0)
+    effNo.histogram.GetXaxis().SetTitle("p_{T} (Gev/c)")
+    effNo.histogram.GetYaxis().SetTitle("Efficiency")
+    effNo.histogram.GetYaxis().SetRangeUser(0, 1)
+    effNo.histogram.SetLineColor(r.kBlue)
+    effNo.replace_displayed_title()
+    effYes.histogram.Draw('same')
+    effYes.histogram.SetLineColor(r.kRed)
+    lCompareYesNo = r.TLegend(0.6, 0.1, 0.9, 0.3)
+    r.SetOwnership(lCompareYesNo, False)
+    lCompareYesNo.AddEntry(effNo.histogram, "IsITSUPCMode=False")
+    lCompareYesNo.AddEntry(effYes.histogram, "IsITSUPCMode=True")
+    lCompareYesNo.Draw()
+    cCompareYesNo.Draw()
+
+    return effNo, effYes
+
+def run_by_run_data_mc(variableNames, units, dataDir, mcDir, daughter, runListFull, runList1, runList2, text=False):
+    """
+    Plot the mean value of a variable vs run number, for data and MC.
+    """
+    if len(units) == 0:
+        units = ['' for _ in range(len(variableNames))]
+    if daughter != 'kaon' and daughter != 'pion':
+        raise Exception("'daughter' argument must be either 'kaon' or 'pion'!")
+    runListFull = sorted(runListFull, key=lambda run: 1*int(run) if run in runList1 else 10*int(run) if run in runList2 else 100*int(run))
+    dictListDataMeans = {key: [] for key in variableNames}
+    dictListMcMeans = {key: [] for key in variableNames}
+    dictListDataMeanErrors = {key: [] for key in variableNames}
+    dictListMcMeanErrors = {key: [] for key in variableNames}
+    listDataColors = []
+    listDataTextColors = []
+    listMcColors = []
+    listMcTextColors = []
+    listLabelColors = []
+    dictColors = {'mc1': 'xkcd:pale lime green', 'data1': 'xkcd:pale cyan', 'mc2': 'xkcd:pale olive green', 'data2': 'xkcd:pastel blue', 'mc3': 'lightgray', 'data3': 'gray'}
+    dictTextColors = {'mc1': 'xkcd:frog green', 'data1': 'xkcd:bright sky blue', 'mc2': 'xkcd:forrest green', 'data2': 'xkcd:cerulean', 'mc3': 'lightgray', 'data3': 'gray'}
+    for irun, run in enumerate(runListFull):
+        dictDataHists = {}
+        dictMcHists = {}
+        print(f"Processing run {run} ({irun+1}/{len(runListFull)})...            ", end='\r')
+        dataFilepath = f"{dataDir}/{run}/AnalysisResults.root"
+        try:
+            with uproot.open(dataFilepath) as dataTmpFile:
+                tmpDir = dataTmpFile["analysis-track-selection/output;1"]
+            listLabelColors.append('black')
+        except:
+            print(f"Run {run} missing from data directory")
+            for variableName in variableNames:
+                dictListDataMeans[variableName].append(0)
+                dictListDataMeanErrors[variableName].append(0)
+                dictListMcMeans[variableName].append(0)
+                dictListMcMeanErrors[variableName].append(0)
+            listDataColors.append('black')
+            listDataTextColors.append('black')
+            listMcColors.append('black')
+            listMcTextColors.append('black')
+            listLabelColors.append('red')
+            continue
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == "TrackBarrel_MyStandardPrimaryTrackDCACut":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") in variableNames:
+                        dictDataHists[iitem.member("fName")] = tmpDir[i][ii]
+
+        for variableName in variableNames:
+            try:
+                dataHist = dictDataHists[variableName].to_numpy()
+            except:
+                print(f"Histogram '{variableName}' not found in data file")
+                continue
+            dataBinCenters = (dataHist[1][:-1] + dataHist[1][1:]) / 2
+            dataMean = np.average(dataBinCenters, weights=dataHist[0])
+            dictListDataMeans[variableName].append(dataMean)
+            dataSampleStdDev = np.sqrt(np.average((dataBinCenters - dataMean)**2, weights=dataHist[0]))
+            dataMeanError = dataSampleStdDev / np.sqrt(len(dataHist[0]))
+            dictListDataMeanErrors[variableName].append(dataMeanError)
+
+        mcFilePath = f"{mcDir}/AnalysisResults_run{run}.root"
+        with uproot.open(mcFilePath) as mcTmpFile:
+            tmpDir = mcTmpFile["analysis-track-selection/output;1"]
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == "AssocsBarrel_BeforeCuts":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") in variableNames:
+                        dictMcHists[iitem.member("fName")] = tmpDir[i][ii]
+
+        for variableName in variableNames:
+            try:
+                mcHist = dictMcHists[variableName].to_numpy()
+            except:
+                print(f"Histogram '{variableName}' not found in mc file")
+                continue
+            mcBinCenters = (mcHist[1][:-1] + mcHist[1][1:]) / 2
+            mcMean = np.average(mcBinCenters, weights=mcHist[0])
+            dictListMcMeans[variableName].append(mcMean)
+            mcSampleStdDev = np.sqrt(np.average((mcBinCenters - mcMean)**2, weights=mcHist[0]))
+            mcMeanError = mcSampleStdDev / np.sqrt(len(mcHist[0]))
+            dictListMcMeanErrors[variableName].append(mcMeanError)
+
+        if run in runList1:
+            listDataColors.append(dictColors['data1'])
+            listDataTextColors.append(dictTextColors['data1'])
+            listMcColors.append(dictColors['mc1'])
+            listMcTextColors.append(dictTextColors['mc1'])
+        elif run in runList2:
+            listDataColors.append(dictColors['data2'])
+            listDataTextColors.append(dictTextColors['data2'])
+            listMcColors.append(dictColors['mc2'])
+            listMcTextColors.append(dictTextColors['mc2'])
+        else:
+            listDataColors.append(dictColors['data3'])
+            listDataTextColors.append(dictTextColors['data3'])
+            listMcColors.append(dictColors['mc3'])
+            listMcTextColors.append(dictTextColors['mc3'])
+    print("Complete!                        ")
+
+    runAxis = np.arange(len(runListFull))
+    fig, axs = plt.subplots(len(variableNames), 1, figsize=(20, 5 * len(variableNames)))
+    width = 0.5
+
+    for i, ax in enumerate(axs):
+        ax.set_title(f"{variableNames[i]}, data primary tracks and MC reco {daughter}")
+        barData = ax.bar(runAxis - width*0.5, dictListDataMeans[variableNames[i]], width, yerr=dictListDataMeanErrors[variableNames[i]], color=listDataColors, capsize=3)
+        barMc = ax.bar(runAxis + width*0.5, dictListMcMeans[variableNames[i]], width, yerr=dictListMcMeanErrors[variableNames[i]], color=listMcColors, capsize=3)
+        for j, label in enumerate(runListFull):
+            if text:
+                ax.text(runAxis[j] - 0.5, listMeanEff[j] + 0.05, f'{listMeanEff[j]:.4f}$\pm${listMeanEffError[j]:.4f}')
+            ax.text(runAxis[j], ax.get_ylim()[0]-(0.008*(ax.get_ylim()[1]-ax.get_ylim()[0])), label, ha='center', va='top', rotation=90, color=listLabelColors[j])
+        ax.set_xticks(runAxis, '', rotation=90)
+        ax.set_ylabel(f'$\langle${variableNames[i]}$\\rangle$' + ('' if units[i]=='' else f' ({units[i]})'))
+        patchData = mpatches.Patch(color=dictColors['data2'], label='Data')
+        patchMc = mpatches.Patch(color=dictColors['mc2'], label='Mc')
+        ax.legend(handles=[patchData, patchMc])
+    plt.tight_layout()
+    plt.show()
+
+    return axs
+
+def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, mmin=1.81, mmax=1.90, text=False):
+    """
+    Plot the number of D0 candidates vs run number, for data and MC.
+    """
+    runListFull = sorted(runListFull, key=lambda run: 1*int(run) if run in runList1 else 10*int(run) if run in runList2 else 100*int(run))
+    listDataNumCandidates = []
+    listMcNumCandidates = []
+    dataNumCandidatesTotal = 0
+    mcNumCandidatesTotal = 0
+    listDataColors = []
+    listDataTextColors = []
+    listMcColors = []
+    listMcTextColors = []
+    listLabelColors = []
+    dictColors = {'mc1': 'xkcd:pale lime green', 'data1': 'xkcd:pale cyan', 'mc2': 'xkcd:pale olive green', 'data2': 'xkcd:pastel blue', 'mc3': 'lightgray', 'data3': 'gray'}
+    dictTextColors = {'mc1': 'xkcd:frog green', 'data1': 'xkcd:bright sky blue', 'mc2': 'xkcd:forrest green', 'data2': 'xkcd:cerulean', 'mc3': 'lightgray', 'data3': 'gray'}
+    for irun, run in enumerate(runListFull):
+        print(f"Processing run {run} ({irun+1}/{len(runListFull)})...            ", end='\r')
+        if 'perlmutter' in dataDir:
+            dataFilepath = f"{dataDir}/AnalysisResults_run{run}.root"
+        else:
+            dataFilepath = f"{dataDir}/{run}/AnalysisResults.root"
+        try:
+            with uproot.open(dataFilepath) as dataTmpFile:
+                tmpDir = dataTmpFile["analysis-asymmetric-pairing/output;1"]
+            listLabelColors.append('black')
+        except:
+            print(f"Run {run} missing from data directory")
+            listDataColors.append('black')
+            listDataTextColors.append('black')
+            listMcColors.append('black')
+            listMcTextColors.append('black')
+            listLabelColors.append('red')
+            continue
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'Mass':
+                        dataHistRaw = tmpDir[i][ii]
+
+        dataHist = dataHistRaw.to_hist()
+        dataNumCandidates = dataHist[complex(0, mmin):complex(0, mmax)].sum().value
+        listDataNumCandidates.append(dataNumCandidates)
+        dataNumCandidatesTotal += dataNumCandidates
+
+        mcFilePath = f"{mcDir}/AnalysisResults_run{run}.root"
+        with uproot.open(mcFilePath) as mcTmpFile:
+            tmpDir = mcTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            # The total number of generator lvl signal is the relevant number for weighing of the sum of efficiecies over runs
+            if item.member("fName") == "MCTruthGenAfterBcCuts_D0FS":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MyMcPtYHisto':
+                        mcHistRaw = tmpDir[i][ii]
+
+        mcHist = mcHistRaw.to_hist()
+        mcNumCandidates = mcHist[:,-0.9j:0.9j].sum().value
+        listMcNumCandidates.append(mcNumCandidates)
+        mcNumCandidatesTotal += mcNumCandidates
+
+        if run in runList1:
+            listDataColors.append(dictColors['data1'])
+            listDataTextColors.append(dictTextColors['data1'])
+            listMcColors.append(dictColors['mc1'])
+            listMcTextColors.append(dictTextColors['mc1'])
+        elif run in runList2:
+            listDataColors.append(dictColors['data2'])
+            listDataTextColors.append(dictTextColors['data2'])
+            listMcColors.append(dictColors['mc2'])
+            listMcTextColors.append(dictTextColors['mc2'])
+        else:
+            listDataColors.append(dictColors['data3'])
+            listDataTextColors.append(dictTextColors['data3'])
+            listMcColors.append(dictColors['mc3'])
+            listMcTextColors.append(dictTextColors['mc3'])
+    print("Complete!                        ")
+
+    # Normalize by total number of candidates -- for efficiency it is the distribution between run that matters, not the absolute values
+    listDataNumCandidates = np.array(listDataNumCandidates) / dataNumCandidatesTotal
+    listMcNumCandidates = np.array(listMcNumCandidates) / mcNumCandidatesTotal
+
+    runAxis = np.arange(len(runListFull))
+    fig = plt.figure(figsize=(20, 5))
+    ax = fig.add_subplot(111)
+    width = 0.5
+
+    ax.set_title(f"D0 candidates in data (pairs with {mmin} < m < {mmax} GeV/c2) and MC generated D0 (after BC cuts)")
+    barData = ax.bar(runAxis - width*0.5, listDataNumCandidates, width, color=listDataColors, capsize=3)
+    barMc = ax.bar(runAxis + width*0.5, listMcNumCandidates, width, color=listMcColors, capsize=3)
+    for j, label in enumerate(runListFull):
+        ax.text(runAxis[j], ax.get_ylim()[0]-(0.008*(ax.get_ylim()[1]-ax.get_ylim()[0])), label, ha='center', va='top', rotation=90, color=listLabelColors[j])
+    ax.set_xticks(runAxis, '', rotation=90)
+    ax.set_ylabel("Fraction of D0 candidates")
+    patchData = mpatches.Patch(color=dictColors['data2'], label='Data')
+    patchMc = mpatches.Patch(color=dictColors['mc2'], label='Mc')
+    ax.legend(handles=[patchData, patchMc])
+    plt.tight_layout()
+    plt.show()
+
+    return ax, listDataNumCandidates, listMcNumCandidates
+
+def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorDir, denominatorDir, runListFull, runList1, runList2, minPt=0., maxPt=20., text=False):
+    """
+    Given a directory of AnalysisResults.root files for each run, create a plot showing a given efficiency vs run number. Use uproot for I/O.
+    """
+    if 'Gen' in numeratorString:
+        numeratorHistName = 'MyMcPtYHisto'
+    else:
+        numeratorHistName = 'Pt'
+    if 'Gen' in denominatorString:
+        denominatorHistName = 'MyMcPtYHisto'
+    else:
+        denominatorHistName = 'Pt'
+
+    runListFull = sorted(runListFull, key=lambda run: 1*int(run) if run in runList1 else 10*int(run) if run in runList2 else 100*int(run))
+    listMeanEff = []
+    listMeanEffError = []
+    totalNumCountsRunList1 = 0
+    totalNumCountsRunList2 = 0
+    totalDenCountsRunList1 = 0
+    totalDenCountsRunList2 = 0
+    listColors = []
+    listTextColors = []
+    dictColors = {'1': 'xkcd:baby blue', '2': 'xkcd:pale pink', '3': 'lightgray'}
+    dictTextColors = {'1': 'xkcd:bright blue', '2': 'xkcd:red', '3': 'lightgray'}
+    for irun, run in enumerate(runListFull):
+        print(f"Processing run {run} ({irun+1}/{len(runListFull)})...            ", end='\r')
+        numeratorFilepath = f"{numeratorDir}/AnalysisResults_run{run}.root"
+        with uproot.open(numeratorFilepath) as numTmpFile:
+            tmpDir = numTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == numeratorString:
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == numeratorHistName:
+                        numHistRaw = tmpDir[i][ii]
+        numHist = numHistRaw.to_hist()
+        # If we are looking for a generator lvl histogram, we need to project out out rapidity range
+        if 'Gen' in numeratorString:
+            numCount = numHist[complex(0, minPt):complex(0, maxPt),-0.9j:0.9j].sum().value
+        else:
+            numCount = numHist[complex(0, minPt):complex(0, maxPt)].sum().value
+
+        denominatorFilepath = f"{denominatorDir}/AnalysisResults_run{run}.root"
+        with uproot.open(denominatorFilepath) as denTmpFile:
+            tmpDir = denTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == denominatorString:
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == denominatorHistName:
+                        denHistRaw = tmpDir[i][ii]
+        denHist = denHistRaw.to_hist()
+        # If we are looking for a generator lvl histogram, we need to project out out rapidity range
+        if 'Gen' in denominatorString:
+            denCount = denHist[complex(0, minPt):complex(0, maxPt),-0.9j:0.9j].sum().value
+        else:
+            denCount = denHist[complex(0, minPt):complex(0, maxPt)].sum().value
+
+        # We want the average efficiency per run; rebin such that we have only one bin, extract the content and error
+        if numCount == 0:
+            eff = 0
+            effError = 0
+        else:
+            eff = numCount / denCount
+            effError = (1/denCount) * np.sqrt(numCount * (1 - numCount/denCount)) # Binomial error calculation
+        listMeanEff.append(eff)
+        listMeanEffError.append(effError)
+        
+        if run in runList1:
+            listColors.append(dictColors['1'])
+            listTextColors.append(dictTextColors['1'])
+            totalNumCountsRunList1 += numCount
+            totalDenCountsRunList1 += denCount
+        elif run in runList2:
+            listColors.append(dictColors['2'])
+            listTextColors.append(dictTextColors['2'])
+            totalNumCountsRunList2 += numCount
+            totalDenCountsRunList2 += denCount
+        else:
+            listColors.append(dictColors['3'])
+            listTextColors.append(dictTextColors['3'])
+    print("Complete!                        ")
+
+    totalNumErrRunList1 = np.sqrt(totalNumCountsRunList1)
+    totalDenErrRunList1 = np.sqrt(totalDenCountsRunList1)
+    meanEffRunList1 = totalNumCountsRunList1 / totalDenCountsRunList1
+    meanEffErrRunList1 = (1/totalDenCountsRunList1) * np.sqrt(totalNumCountsRunList1 * (1 - totalNumCountsRunList1/totalDenCountsRunList1)) # Binomial error calculation
+
+    totalNumErrRunList2 = np.sqrt(totalNumCountsRunList2)
+    totalDenErrRunList2 = np.sqrt(totalDenCountsRunList2)
+    meanEffRunList2 = totalNumCountsRunList2 / totalDenCountsRunList2
+    meanEffErrRunList2 = (1/totalDenCountsRunList2) * np.sqrt(totalNumCountsRunList2 * (1 - totalNumCountsRunList2/totalDenCountsRunList2)) # Binomial error calculation
+        
+    runAxis = np.arange(len(runListFull))
+    plt.figure(figsize=(15, 5))
+    plt.title(f"$\\frac{{\\text{{{numeratorTitle}}}}}{{\\text{{{denominatorTitle}}}}}$, {minPt} < $p_\\text{{T}}$ < {maxPt} GeV/c")
+    plt.bar(runAxis, listMeanEff, yerr=listMeanEffError, color=listColors, capsize=3)
+    # plt.hlines(meanEffRunList1, -0.5, len(runList1)-0.5, alpha=0.5, color=dictTextColors['1'])
+    # plt.hlines(meanEffRunList2, len(runList1)-0.5, len(runList1)+len(runList2)-0.5, alpha=0.5, color=dictTextColors['2'])
+    plt.fill_between(runAxis, meanEffRunList1 - meanEffErrRunList1, meanEffRunList1 + meanEffErrRunList1, where=(runAxis > -1.) & (runAxis < len(runList1)), color=dictTextColors['1'], alpha=0.5)
+    plt.fill_between(runAxis, meanEffRunList2 - meanEffErrRunList2, meanEffRunList2 + meanEffErrRunList2, where=(runAxis > len(runList1)-1.) & (runAxis < len(runList1)+len(runList2)), color=dictTextColors['2'], alpha=0.5)
+    for i, label in enumerate(runListFull):
+        if text:
+            plt.text(runAxis[i] - 0.5, listMeanEff[i] + 0.05, f'{listMeanEff[i]:.4f}$\pm${listMeanEffError[i]:.4f}')
+        plt.text(runAxis[i], plt.ylim()[0]-(0.008*(plt.ylim()[1]-plt.ylim()[0])), label, ha='center', va='top', color=listTextColors[i], rotation=90)
+    plt.xticks(runAxis, '', rotation=90)
+    plt.ylabel('$\\langle\\epsilon\\rangle$')
+    plt.tight_layout()
+    plt.show()
 
 def run_by_run_tof_matching_efficiency(runListFull, runListNo, runListYes, runListExclude, directory, dataOrMc='mc', showPlot=True, firstPtBin=0, lastPtBin=-1, firstEtaBin=0, lastEtaBin=-1, sortBy='yesno'):
     """
@@ -208,6 +628,11 @@ class Efficiency():
         # Replace the displayed title of the histogram with the TeX formatted title
         self.histogram.SetTitle("")
         self.draw_title(0.5, 0.95, size=0.035, includeshort=includeshort)
+
+    def take_ownership(self):
+        self.histNumerator.SetDirectory(0)
+        self.histDenominator.SetDirectory(0)
+        self.histogram.SetDirectory(0)
 
 class FactorizedEfficiency():
     def __init__(self, nFactors):
@@ -745,7 +1170,7 @@ class Analysis():
         eff = FactorizedEfficiency(6)
         eff.add_factor("Gen. D0 in rec. evt.", "Gen. D0 in lumi", self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins)
         eff.add_factor("Gen. D0 in sel. evt.", "Gen. D0 in rec. evt.", self.histD0PtGenInSelEvent, self.histD0PtGenInRecEvent)
-        eff.add_factor("Gen. D0 in rec. evt., daughters in acc.", "Gen. D0 in sel. evt.", self.histD0PtGenInSelEventDaughtersInAcc, self.histD0PtGenInSelEvent)
+        eff.add_factor("Gen. D0 in sel. evt., daughters in acc.", "Gen. D0 in sel. evt.", self.histD0PtGenInSelEventDaughtersInAcc, self.histD0PtGenInSelEvent)
         eff.add_factor("Rec. matched D0 in sel. evt", "Gen. D0 in sel. evt., daughters in acc.", self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEventDaughtersInAcc)
         eff.add_factor("Rec. matched D0 in sel. evt. after track cuts", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEvent)
         eff.add_factor("Rec. matched D0 in sel. evt. after track and pair cuts", "Rec. matched D0 in sel. evt. after track cuts", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts)
