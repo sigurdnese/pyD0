@@ -212,7 +212,7 @@ def run_by_run_data_mc(variableNames, units, dataDir, mcDir, daughter, runListFu
 
     return axs
 
-def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, mmin=1.81, mmax=1.90, text=False):
+def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, mmin=1.81, mmax=1.90, text=False, useLumi=True):
     """
     Plot the number of D0 candidates vs run number, for data and MC.
     """
@@ -228,35 +228,55 @@ def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, m
     listLabelColors = []
     dictColors = {'mc1': 'xkcd:pale lime green', 'data1': 'xkcd:pale cyan', 'mc2': 'xkcd:pale olive green', 'data2': 'xkcd:pastel blue', 'mc3': 'lightgray', 'data3': 'gray'}
     dictTextColors = {'mc1': 'xkcd:frog green', 'data1': 'xkcd:bright sky blue', 'mc2': 'xkcd:forrest green', 'data2': 'xkcd:cerulean', 'mc3': 'lightgray', 'data3': 'gray'}
+
+    if useLumi:
+        lumiFile = r.TFile.Open("~/cernbox/PbPb23_singlegap/LHC23_PbPb_pass4_train355821/mergedAnalysisResults.root")
+        lumiHist = lumiFile.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
+        for run in runListFull:
+            try:
+                lumi = lumiHist.GetBinContent(lumiHist.GetXaxis().FindBin(run))
+                listDataNumCandidates.append(lumi)
+                dataNumCandidatesTotal += lumi
+                listLabelColors.append('black')
+            except:
+                print(f"Run {run} missing from data directory")
+                listDataColors.append('black')
+                listDataTextColors.append('black')
+                listMcColors.append('black')
+                listMcTextColors.append('black')
+                listLabelColors.append('red')
+                continue
+
     for irun, run in enumerate(runListFull):
         print(f"Processing run {run} ({irun+1}/{len(runListFull)})...            ", end='\r')
-        if 'perlmutter' in dataDir:
-            dataFilepath = f"{dataDir}/AnalysisResults_run{run}.root"
-        else:
-            dataFilepath = f"{dataDir}/{run}/AnalysisResults.root"
-        try:
-            with uproot.open(dataFilepath) as dataTmpFile:
-                tmpDir = dataTmpFile["analysis-asymmetric-pairing/output;1"]
-            listLabelColors.append('black')
-        except:
-            print(f"Run {run} missing from data directory")
-            listDataColors.append('black')
-            listDataTextColors.append('black')
-            listMcColors.append('black')
-            listMcTextColors.append('black')
-            listLabelColors.append('red')
-            continue
-        for i, item in enumerate(tmpDir):
-            # TODO: Which cuts should be applied when counting these candidates?
-            if item.member("fName") == "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut":
-                for ii, iitem in enumerate(tmpDir[i]):
-                    if iitem.member("fName") == 'Mass':
-                        dataHistRaw = tmpDir[i][ii]
+        if not useLumi:
+            if 'perlmutter' in dataDir:
+                dataFilepath = f"{dataDir}/AnalysisResults_run{run}.root"
+            else:
+                dataFilepath = f"{dataDir}/{run}/AnalysisResults.root"
+            try:
+                with uproot.open(dataFilepath) as dataTmpFile:
+                    tmpDir = dataTmpFile["analysis-asymmetric-pairing/output;1"]
+                listLabelColors.append('black')
+            except:
+                print(f"Run {run} missing from data directory")
+                listDataColors.append('black')
+                listDataTextColors.append('black')
+                listMcColors.append('black')
+                listMcTextColors.append('black')
+                listLabelColors.append('red')
+                continue
+            for i, item in enumerate(tmpDir):
+                # TODO: Which cuts should be applied when counting these candidates?
+                if item.member("fName") == "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut":
+                    for ii, iitem in enumerate(tmpDir[i]):
+                        if iitem.member("fName") == 'Mass':
+                            dataHistRaw = tmpDir[i][ii]
 
-        dataHist = dataHistRaw.to_hist()
-        dataNumCandidates = dataHist[complex(0, mmin):complex(0, mmax)].sum().value
-        listDataNumCandidates.append(dataNumCandidates)
-        dataNumCandidatesTotal += dataNumCandidates
+            dataHist = dataHistRaw.to_hist()
+            dataNumCandidates = dataHist[complex(0, mmin):complex(0, mmax)].sum().value
+            listDataNumCandidates.append(dataNumCandidates)
+            dataNumCandidatesTotal += dataNumCandidates
 
         mcFilePath = f"{mcDir}/AnalysisResults_run{run}.root"
         with uproot.open(mcFilePath) as mcTmpFile:
@@ -297,16 +317,19 @@ def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, m
     runAxis = np.arange(len(runListFull))
     fig = plt.figure(figsize=(20, 5))
     ax = fig.add_subplot(111)
-    width = 0.5
+    width = 0.4
 
-    ax.set_title(f"D0 candidates in data (pairs with {mmin} < m < {mmax} GeV/c2) and MC generated D0 (after BC cuts)")
+    if not useLumi:
+        ax.set_title(f"D0 candidates in data (pairs with {mmin} < m < {mmax} GeV/c2) and MC generated D0 (after BC cuts)")
+    else:
+        ax.set_title(f"Lumi in data and MC generated D0 (after BC cuts)")
     barData = ax.bar(runAxis - width*0.5, listDataNumCandidates, width, color=listDataColors, capsize=3)
     barMc = ax.bar(runAxis + width*0.5, listMcNumCandidates, width, color=listMcColors, capsize=3)
     for j, label in enumerate(runListFull):
         ax.text(runAxis[j], ax.get_ylim()[0]-(0.008*(ax.get_ylim()[1]-ax.get_ylim()[0])), label, ha='center', va='top', rotation=90, color=listLabelColors[j])
     ax.set_xticks(runAxis, '', rotation=90)
-    ax.set_ylabel("Fraction of D0 candidates")
-    patchData = mpatches.Patch(color=dictColors['data2'], label='Data')
+    ax.set_ylabel("Fraction of run total")
+    patchData = mpatches.Patch(color=dictColors['data2'], label='Data' + (' lumi' if useLumi else ''))
     patchMc = mpatches.Patch(color=dictColors['mc2'], label='Mc')
     ax.legend(handles=[patchData, patchMc])
     plt.tight_layout()
@@ -723,17 +746,34 @@ class PtBin():
 class Analysis():
     """Class containing everything needed to calculate a D0 cross section from O2Physics output"""
 
-    def __init__(self, pathTableReader, pathTableMaker, pathRec, pathGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.],
-                 IsITSUPCMode = 2, **kwargs):
-        # Files containing the necessary histograms
+    DEFAULT_RUNLIST = ['545367', '545345', '545332', '545312', '545311', '545296', '545294', '545291', '545289', '545262', '545249', '545246', '545223', '545222', '545210', '545185', '545184', '545171', '545117', '545103', '545086', '545064', '545063', '545062', '545060', '545047', '545044', '545042', '545041', '545009', '545008', '545004', '544992', '544991', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013']
+
+    def __init__(self, pathTableReader, pathTableMaker, dirRec, dirGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, fileNameRec = None, fileNameGen=None, **kwargs):
+        # The runList defines which files are looped over in run-by-run calculations
+        self.runList = runList if runList is not None else Analysis.DEFAULT_RUNLIST
+        self.runList = sorted(self.runList)
+        print(f"This analysis contains {len(self.runList)} runs")
+
+        # Import files containing the necessary histograms, and check that these merged files contain only the runs in the runList
         self.fileTableReader = r.TFile.Open(pathTableReader)
+        self.check_file_for_runs(self.fileTableReader, ['analysis-event-selection/output', 'Event_BeforeCuts', 'VtxZ_Run'])
         self.fileTableMaker = r.TFile.Open(pathTableMaker)
-        self.fileRec = r.TFile.Open(pathRec)
-        self.fileGen = r.TFile.Open(pathGen)
+        self.check_file_for_runs(self.fileTableMaker, ['bc-selection-task', 'hCounterTCE'])
+        if fileNameRec is not None:
+            self.fileRec = r.TFile.Open(f'{dirRec}/{fileNameRec}')
+            self.check_file_for_runs(self.fileRec, ['lumi-task', 'hCounterTCE'])
+        if fileNameGen is not None:
+            self.fileGen = r.TFile.Open(f'{dirGen}/{fileNameGen}')
+            self.check_file_for_runs(self.fileGen, ['lumi-task', 'hCounterTCE'])
         if pathReflected is None:
             self.fileReflected = self.fileRec
         else:
             self.fileReflected = r.TFile.Open(pathReflected)
+            self.check_file_for_runs(self.fileReflected, ['lumi-task', 'hCounterTCE'])
+
+        self.dirRec = dirRec
+        self.dirGen = dirGen
+
         # Get default cut names, replace if specified in construction
         cutNames = {
             "kaonLegCutName" : "kaonPIDTPCTOFpTDCAz",
@@ -753,7 +793,6 @@ class Analysis():
         self.minY = -0.9
         self.maxY = 0.9
         # Get the mass histograms needed for the signal extraction
-        self.isITSUPCMode = IsITSUPCMode
         self.prepare_histograms()
         # Set the range of the mass axis for plotting and integrating reflected background
         self.massRange = [0., 4.]
@@ -761,44 +800,53 @@ class Analysis():
         self.histLumi = self.fileTableMaker.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
         self.lumi = self.histLumi.Integral() # 1/µb
         print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
+        self.runByRunLumi = {}
+        for run in self.runList:
+           self.runByRunLumi[run] = self.histLumi.GetBinContent(self.histLumi.GetXaxis().FindBin(run)) 
+
+        self.reweighting = False
+
+    def check_file_for_runs(self, file, strings):
+        if len(strings) == 3:
+            group, subGroup, histName = strings
+            hist = file.Get(group).FindObject(subGroup).FindObject(histName)
+        elif len(strings) == 2:
+            group, histName = strings
+            hist = file.Get(group).Get(histName)
+        labels = []
+        for bin in range(1, hist.GetNbinsX() + 1):
+            labels.append(hist.GetXaxis().GetBinLabel(bin))
+        # Remove empty labels
+        labels = [label for label in labels if label]
+        if sorted(labels) != sorted(self.runList):
+            uniqueRuns = set(self.runList) - set(labels)
+            uniqueLabels = set(self.runList) - set(labels)
+            print(f"Items unique to the runList: {uniqueRuns}")
+            print(f"Items unique to the file: {uniqueLabels}")
+            raise Exception(f"File '{file.GetName()}' does not contain the correct set of runs!")
 
     def prepare_histograms(self):
-        # TODO: move the reco signal name to _KPiFromD0FS when ready
-        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0"
-        print(f"Histogram group name for reconstructed, matched D0: {self.groupNameD0PtMatched}")
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
-        if self.isITSUPCMode == 2:
-            self.histD0MassPt = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}").FindObject("MyMassPtHisto")
-            self.histD0PtMatched = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("Pt")
-            self.histD0PtMatched.SetName("histD0PtMatched")
-            self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
-            self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"{self.groupNameD0PtMatched}Reflected").FindObject("MyMassPtHisto")
-        else:
-            raise Exception(f"Choosing ITSUPCMode=0 or 1 is deprecated! This should be defined by the event cut used in the input files for the analysis!")
-            """
-            Choosing to discard events which were reconstructed with ITSUPCMode true/false will not change lumi, just the event reconstruction efficiency
-            The generator level MC D0 mesons will not be affected by this, only the reco level 
-            NOTE: This is a silly and error-prone way of doing this. I should probably just have dedicated runs over data/rec MC where I apply the cut, so that I have dedicated files for these event cuts.
-            """
-            print(f"Getting histograms from multidim histograms w/ variable self.isITSUPCMode = {self.isITSUPCMode}")
-            histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}").FindObject("MyMassPtIsITSUPCModeHisto")
-            histD0MassPtIsITSUPCMode.GetZaxis().SetRange(self.isITSUPCMode+1, self.isITSUPCMode+1)
-            self.histD0MassPt = histD0MassPtIsITSUPCMode.Project3D("yx")
-            self.histD0MassPt.SetName(f"MyMassPtHisto_IsITSUPCMode={self.isITSUPCMode}")
-            histD0PtIsITSUPCModeMatched = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("MyPtIsITSUPCModeHisto") 
-            self.histD0PtMatched = histD0PtIsITSUPCModeMatched.ProjectionX(f"histD0PtMatched_IsITSUPCMode={self.isITSUPCMode}", self.isITSUPCMode+1, self.isITSUPCMode+1)
-            self.histD0PtMatched.SetTitle(f"Reconstructed, matched D0, event IsITSUPCMode={self.isITSUPCMode}")
-            histD0MassPtIsITSUPCModeReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}_KPiFromD0Reflected").FindObject("MyMassPtIsITSUPCModeHisto")
-            histD0MassPtIsITSUPCModeReflected.GetZaxis().SetRange(self.isITSUPCMode+1, self.isITSUPCMode+1)
-            self.histD0MassPtReflected = histD0MassPtIsITSUPCModeReflected.Project3D("yx")
-            self.histD0MassPtReflected.SetName(f"MyMcReflectedMassPtHisto_IsITSUPCMode={self.isITSUPCMode}")
+        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
+        """
+        NEED TO LOOP OVER FILES RUN-BY-RUN -- CANNOT JUST GET ONE REC AND ONE GEN HISTOGRAM
+        # TODO: move the reco signal name to _KPiFromD0FS when ready
+        print(f"Histogram group name for reconstructed, matched D0: {self.groupNameD0PtMatched}")
 
+        """
         self.histD0PtYGenerated = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0Generated).FindObject("MyMcPtYHisto")
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenerated = self.histD0PtYGenerated.ProjectionX(f"projPtMcGen_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
         self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY} < y < {self.maxY}")
+        # Data histogram
+        self.histD0MassPt = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}").FindObject("MyMassPtHisto")
+        # Reconstructed lvl histogram used for the reflected background component
+        self.histD0PtMatched = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("Pt")
+        self.histD0PtMatched.SetName("histD0PtMatched")
+        self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
+        self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"{self.groupNameD0PtMatched}Reflected").FindObject("MyMassPtHisto")
 
         for i, bin in enumerate(self.ptBins):
             # Create an array of slices of the mass vs pT histogram and the MC reflected mass vs pT histogram
@@ -923,113 +971,167 @@ class Analysis():
         self.ptBins[bin].dataReflFunc = dataReflFunc
         self.ptBins[bin].create_fit_results(self.massRange[0], self.massRange[1])
 
-    def calculate_correction(self, reweighting=True):
-        self.reweighting = reweighting
-        self.effRecOverGenFine = self.histD0PtMatched.Clone()
-        self.effRecOverGenFine.Divide(self.histD0PtGenerated)
-        print(f"Rec/Gen histogram was calculated using '{self.groupNameD0PtMatched}' and '{self.groupNameD0Generated}'")
-        self.effRecOverGenFine.SetName("effRecOverGenFine")
-        self.effRecOverGenFine.SetTitle("Reconstructed, matched D0 / Generated D0 after BC cuts")
-        # Make sure the pT axis is (0, 12) GeV
-        if (self.effRecOverGenFine.FindBin(self.ptBinsArray[-1]) <= self.effRecOverGenFine.GetNbinsX()):
-            nFineBins = self.effRecOverGenFine.FindBin(self.ptBinsArray[-1])
-            histTemp = r.TH1F("effRecOverGenFine", "Reconstructed, matched D0 / Generated D0 after BC cuts", nFineBins, self.ptBinsArray[0], self.ptBinsArray[-1])
-            for i in range(1, nFineBins + 1):
-                histTemp.SetBinContent(i, self.effRecOverGenFine.GetBinContent(i))
-                histTemp.SetBinError(i, self.effRecOverGenFine.GetBinError(i))
+    def calculate_efficiency_runbyrun(self, weights='lumi'):
+        """
+        Calculate acc x eff using MC histograms. The calculation is done separately for each run, then the weighted average is calculated using the run luminosity as the weight.
+        """
+        if hasattr(self, 'efficiency'):
+            print("WARNING: Efficiency has already been calculated in this analysis. It will now be overwritten!")
+            if self.reweighting:
+                print("     WARNING: The previous efficiency was reweighted. Remember to reweight again!")
 
-            self.effRecOverGenFine = histTemp
+        self.runByRunEfficiencies = {}
+        self.totalGenHist = r.TH1F("totalGenHist", "totalGenHist", len(self.ptBinsArray) - 1, np.asarray(self.ptBinsArray, 'd'))
+        for irun, run in enumerate(self.runList):
+            print(f"Calculating efficiency for run {run} ({irun+1}/{len(self.runList)})...            ", end='\r')
+            with uproot.open(f'{self.dirRec}/AnalysisResults_run{run}.root') as recFile:
+                recDir = recFile["analysis-asymmetric-pairing/output;1"]
+            for i, item in enumerate(recDir):
+                if item.member('fName') == self.groupNameD0PtMatched:
+                    for ii, iitem in enumerate(recDir[i]):
+                        if iitem.member('fName') == 'Pt':
+                            recHistRaw = recDir[i][ii]
+                            break
+                    break
+            recHist = recHistRaw.to_pyroot()
+            recHist = recHist.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedFinalBins", np.asarray(self.ptBinsArray, 'd'))
+
+            with uproot.open(f'{self.dirGen}/AnalysisResults_run{run}.root') as genFile:
+                genDir = genFile["analysis-asymmetric-pairing/output;1"]
+            for i, item in enumerate(genDir):
+                if item.member('fName') == self.groupNameD0Generated:
+                    for ii, iitem in enumerate(genDir[i]):
+                        if iitem.member('fName') == 'MyMcPtYHisto':
+                            genHistRaw = genDir[i][ii]
+                            break
+                    break
+            genHistPtY = genHistRaw.to_pyroot()
+
+            # Project out our dy bin from the gen histogram
+            lowerYBin = genHistPtY.GetYaxis().FindBin(self.minY)
+            upperYBin = genHistPtY.GetYaxis().FindBin(self.maxY) - 1
+            genHist = genHistPtY.ProjectionX(f"projPtMcGen_y_{self.minY}_{self.maxY}_run{run}", lowerYBin, upperYBin)
+            genHist = genHist.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
+
+            eff = Efficiency(f'Rec. matched D0 after all cuts (run {run})', f'Gen. D0 in lumi (run {run})', recHist, genHist)
+            self.runByRunEfficiencies[run] = eff
+
+            self.totalGenHist.Add(genHist)
+
+        print("")
+        print("Complete!")
+            
+        # TODO: Implement weighted sum of efficiencies with lumi as weights, and propagate the error properly
+        self.efficiency = r.TH1F("efficiency", f"Weighted average of efficiencies per run, weights={weights}", len(self.ptBinsArray) - 1, np.asarray(self.ptBinsArray, 'd'))
+        if weights == 'mcgencount':
+            # Use as weights the fraction of MCGen D0 in the run wrt. the total count. This should reproduce the "naive" calculation.
+            for irun, run in enumerate(self.runList):
+                weight = self.runByRunEfficiencies[run].histDenominator.GetEntries() / self.totalGenHist.GetEntries()
+                self.efficiency.Add(self.runByRunEfficiencies[run].histogram, weight)
+        elif weights == 'lumi':
+            # Use as weights the fraction of lumi in the run wrt. the total lumi
+            for irun, run in enumerate(self.runList):
+                weight = self.runByRunLumi[run] / self.lumi
+                self.efficiency.Add(self.runByRunEfficiencies[run].histogram, weight)
+
+    def calculate_efficiency(self):
+        if hasattr(self, 'efficiency'):
+            print("WARNING: Efficiency has already been calculated in this analysis. It will now be overwritten!")
+            if self.reweighting:
+                print("     WARNING: The previous efficiency was reweighted. Remember to reweight again!")
+
+        self.efficiencyFine = self.histD0PtMatched.Clone()
+        self.efficiencyFine.Divide(self.histD0PtGenerated)
+        print(f"Rec/Gen histogram was calculated using '{self.groupNameD0PtMatched}' and '{self.groupNameD0Generated}'")
+        self.efficiencyFine.SetName("efficiencyFine")
+        self.efficiencyFine.SetTitle("Reconstructed, matched D0 / Generated D0 after BC cuts")
+        # Make sure the pT axis is (0, 12) GeV
+        if (self.efficiencyFine.FindBin(self.ptBinsArray[-1]) <= self.efficiencyFine.GetNbinsX()):
+            nFineBins = self.efficiencyFine.FindBin(self.ptBinsArray[-1])
+            histTemp = r.TH1F("efficiencyFine", "Reconstructed, matched D0 / Generated D0 after BC cuts", nFineBins, self.ptBinsArray[0], self.ptBinsArray[-1])
+            for i in range(1, nFineBins + 1):
+                histTemp.SetBinContent(i, self.efficiencyFine.GetBinContent(i))
+                histTemp.SetBinError(i, self.efficiencyFine.GetBinError(i))
+
+            self.efficiencyFine = histTemp
         # Create a new version of the correction factor hist with the final binning and range
         self.histD0PtMatchedFinalBins = self.histD0PtMatched.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedFinalBins", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtGeneratedFinalBins = self.histD0PtGenerated.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
-        self.effRecOverGen = self.histD0PtMatchedFinalBins.Clone()
-        self.effRecOverGen.SetName("effRecOverGen")
-        self.effRecOverGen.SetTitle("Reconstructed / Generated;p_{T};Ratio")
-        self.effRecOverGen.Divide(self.histD0PtGeneratedFinalBins)
+        self.efficiency = self.histD0PtMatchedFinalBins.Clone()
+        self.efficiency.SetName("efficiency")
+        self.efficiency.SetTitle("Reconstructed / Generated;p_{T};Ratio")
+        self.efficiency.Divide(self.histD0PtGeneratedFinalBins)
+
+    def calculate_corrected_spectrum(self):
+        if hasattr(self, 'histCorrectedSpectrum'):
+            print("WARNING: The corrected spectrum was calculated for this analysis before!")
         # Apply correction factor
         self.histCorrectedSpectrum = self.histRawYield.Clone()
-        self.histCorrectedSpectrum.SetName("histCorrectedSpectrumWithoutReweighting")
-        self.histCorrectedSpectrum.SetTitle("Corrected pT spectrum without reweighting")
+        self.histCorrectedSpectrum.SetName("histCorrectedSpectrum")
+        self.histCorrectedSpectrum.SetTitle("Corrected pT spectrum")
         self.histCorrectedSpectrum.GetYaxis().SetTitle("dN/dp_{T}")
-        self.histCorrectedSpectrum.Divide(self.effRecOverGen)
+        self.histCorrectedSpectrum.Divide(self.efficiency)
 
-        if reweighting:
-            self.reweightingFunc = r.TF1("powerLaw", "[0]*x/TMath::Power((1+TMath::Power(x/[1],[3])),[2])", 0, 12)
-            self.reweightingFunc.SetParameters(394000, 1.83, 1.78, 2.87)
-            print("===== Fitting to the corrected spectrum for reweighting =====")
-            self.reweightingFitResults = self.histCorrectedSpectrum.Fit(self.reweightingFunc, "LS0")
-            self.effRecOverGenReweighted = self.effRecOverGen.Clone()
-            self.effRecOverGenReweighted.Reset()
-            self.effRecOverGenReweighted.SetName("effRecOverGenReweighted")
-            self.effRecOverGenReweighted.SetTitle("Reconstructed / Generated, reweighted")
-            dpT = self.effRecOverGenFine.GetBinWidth(1)
-            # Calculate numerator of <epsilon>_i
-            for i in range(1, self.effRecOverGenFine.GetNbinsX() + 1):
-                binCenter = self.effRecOverGenFine.GetBinCenter(i)
-                binContent = self.effRecOverGenFine.GetBinContent(i)
-                binError = self.effRecOverGenFine.GetBinError(i)
-                weight = self.reweightingFunc.Eval(binCenter)
-                # Calculate weighted content
-                weightedContent = binContent * weight * dpT
-                weightedError = np.abs(weight) * dpT * binError # Error propagation
-                # Find the target bin and fill it
-                targetBin = self.effRecOverGenReweighted.FindBin(binCenter)
-                self.effRecOverGenReweighted.AddBinContent(targetBin, weightedContent)
-                currentErrorTarget = self.effRecOverGenReweighted.GetBinError(targetBin)
-                self.effRecOverGenReweighted.SetBinError(targetBin, np.sqrt(currentErrorTarget**2 + weightedError**2))
-            # Calculate denominator of <epsilon>_i
-            histDenominator = self.effRecOverGen.Clone()
-            histDenominator.Reset()
-            # For some reason the first iteration of IntegralError gives a nonsensical value, throw this away first
-            _ = self.reweightingFunc.IntegralError(0., 0.1, self.reweightingFitResults.GetParams(), self.reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
-            for i in range(1, self.effRecOverGenReweighted.GetNbinsX() + 1):
-                lowEdge = self.effRecOverGenReweighted.GetXaxis().GetBinLowEdge(i)
-                upEdge = self.effRecOverGenReweighted.GetXaxis().GetBinUpEdge(i)
-                print(f"--- Calculating integral of reweightingFunc from {lowEdge} to {upEdge} ---")
-                integral = self.reweightingFunc.Integral(lowEdge, upEdge)
-                histDenominator.SetBinContent(i, integral)
-                integralError = self.reweightingFunc.IntegralError(lowEdge, upEdge, self.reweightingFitResults.GetParams(), self.reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
-                print(f"Bin {i}: integral = {integral} +- {integralError}")
-                histDenominator.SetBinError(i, integralError)
-            # Obtain <epsilon>_i as a histogram
-            self.effRecOverGenReweighted.Divide(histDenominator)
-            self.effRecOverGenWithoutReweighting = self.effRecOverGen
-            self.effRecOverGenWithoutReweighting.SetLineColor(r.kRed)
-            self.effRecOverGenWithoutReweighting.SetTitle("Reconstructed / Generated, without reweighting")
-            self.effRecOverGen = self.effRecOverGenReweighted
+    def reweight_efficiency(self):
+        self.reweighting = True
+        if self.histCorrectedSpectrum is None:
+            print("Corrected spectrum was not calculated yet, doing it now.")
+            self.calculate_corrected_spectrum()
 
-            # Apply reweighted correction factor
-            self.histCorrectedSpectrumReweighted = self.histRawYield.Clone()
-            self.histCorrectedSpectrumReweighted.SetName("histCorrectedSpectrumWithReweighting")
-            self.histCorrectedSpectrumReweighted.SetTitle("Corrected pT spectrum with reweighting")
-            self.histCorrectedSpectrumReweighted.GetYaxis().SetTitle("dN/dp_{T}")
-            self.histCorrectedSpectrumReweighted.Divide(self.effRecOverGen)
-            self.histCorrectedSpectrumWithoutReweighting = self.histCorrectedSpectrum
-            self.histCorrectedSpectrumWithoutReweighting.SetLineColor(r.kRed)
-            self.histCorrectedSpectrumWithoutReweighting.SetTitle("Corrected spectrum, without reweighting")
-            self.histCorrectedSpectrum = self.histCorrectedSpectrumReweighted
+        self.reweightingFunc = r.TF1("powerLaw", "[0]*x/TMath::Power((1+TMath::Power(x/[1],[3])),[2])", 0, 12)
+        self.reweightingFunc.SetParameters(394000, 1.83, 1.78, 2.87)
+        print("===== Fitting to the corrected spectrum for reweighting =====")
+        self.reweightingFitResults = self.histCorrectedSpectrum.Fit(self.reweightingFunc, "LS0")
+        self.efficiencyReweighted = self.efficiency.Clone()
+        self.efficiencyReweighted.Reset()
+        self.efficiencyReweighted.SetName("efficiencyReweighted")
+        self.efficiencyReweighted.SetTitle("Reconstructed / Generated, reweighted")
+        dpT = self.efficiencyFine.GetBinWidth(1)
+        # Calculate numerator of <epsilon>_i
+        for i in range(1, self.efficiencyFine.GetNbinsX() + 1):
+            binCenter = self.efficiencyFine.GetBinCenter(i)
+            binContent = self.efficiencyFine.GetBinContent(i)
+            binError = self.efficiencyFine.GetBinError(i)
+            weight = self.reweightingFunc.Eval(binCenter)
+            # Calculate weighted content
+            weightedContent = binContent * weight * dpT
+            weightedError = np.abs(weight) * dpT * binError # Error propagation
+            # Find the target bin and fill it
+            targetBin = self.efficiencyReweighted.FindBin(binCenter)
+            self.efficiencyReweighted.AddBinContent(targetBin, weightedContent)
+            currentErrorTarget = self.efficiencyReweighted.GetBinError(targetBin)
+            self.efficiencyReweighted.SetBinError(targetBin, np.sqrt(currentErrorTarget**2 + weightedError**2))
+        # Calculate denominator of <epsilon>_i
+        histDenominator = self.efficiency.Clone()
+        histDenominator.Reset()
+        # For some reason the first iteration of IntegralError gives a nonsensical value, throw this away first
+        _ = self.reweightingFunc.IntegralError(0., 0.1, self.reweightingFitResults.GetParams(), self.reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
+        for i in range(1, self.efficiencyReweighted.GetNbinsX() + 1):
+            lowEdge = self.efficiencyReweighted.GetXaxis().GetBinLowEdge(i)
+            upEdge = self.efficiencyReweighted.GetXaxis().GetBinUpEdge(i)
+            print(f"--- Calculating integral of reweightingFunc from {lowEdge} to {upEdge} ---")
+            integral = self.reweightingFunc.Integral(lowEdge, upEdge)
+            histDenominator.SetBinContent(i, integral)
+            integralError = self.reweightingFunc.IntegralError(lowEdge, upEdge, self.reweightingFitResults.GetParams(), self.reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
+            print(f"Bin {i}: integral = {integral} +- {integralError}")
+            histDenominator.SetBinError(i, integralError)
+        # Obtain <epsilon>_i as a histogram
+        self.efficiencyReweighted.Divide(histDenominator)
+        self.efficiencyWithoutReweighting = self.efficiency
+        self.efficiencyWithoutReweighting.SetLineColor(r.kRed)
+        self.efficiencyWithoutReweighting.SetTitle("Reconstructed / Generated, without reweighting")
+        self.efficiency = self.efficiencyReweighted
 
-    def calculate_isitsupcmode_efficiency(self):
-        print(f"Calculating isITSUPCMode efficiency is deprecated")
-        """
-        if self.isITSUPCMode == 2:
-            raise Exception("Analysis was not initialized with an IsITSUPCMode value specified!")
-        # Calculate the efficiency of the selection applied on IsITSUPCMode, which is to be multiplied by the correction factor obtained in calculate_correction
-        histD0MassPtIsITSUPCMode = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_D0StrictTopoCuts2").FindObject("MyMassPtIsITSUPCModeHisto")
-        # Select D0 candidates by projecting out the D0 mass range (TODO: use a histogram with a very good S/B for this specific purpose)
-        lowerBin = histD0MassPtIsITSUPCMode.GetXaxis().FindBin(1.8) + 1
-        upperBin = histD0MassPtIsITSUPCMode.GetXaxis().FindBin(1.9)
-        histD0MassPtIsITSUPCMode.GetXaxis().SetRange(lowerBin, upperBin)
-        histD0PtIsITSUPCMode = histD0MassPtIsITSUPCMode.Project3D("zy")
-        self.histD0PtIsITSUPCModeAll = histD0PtIsITSUPCMode.ProjectionX("histD0PtIsITSUPCModeAll", 1, 2)
-        self.histD0PtIsITSUPCModeAll = self.histD0PtIsITSUPCModeAll.Rebin(len(self.ptBinsArray) - 1, "histD0PtIsITSUPCModeAll", np.asarray(self.ptBinsArray, 'd'))
-        self.histD0PtIsITSUPCModeSelected = histD0PtIsITSUPCMode.ProjectionX(f"histD0PtIsITSUPCMode{self.isITSUPCMode}", self.isITSUPCMode + 1, self.isITSUPCMode + 1)
-        self.histD0PtIsITSUPCModeSelected = self.histD0PtIsITSUPCModeSelected.Rebin(len(self.ptBinsArray) - 1, "histD0PtIsITSUPCModeSelected", np.asarray(self.ptBinsArray, 'd'))
-        self.histIsITSUPCModeEfficiency = self.histD0PtIsITSUPCModeSelected.Clone()
-        self.histIsITSUPCModeEfficiency.SetName("histIsITSUPCModeEfficiency")
-        self.histIsITSUPCModeEfficiency.SetTitle(f"IsITSUPCMode={self.isITSUPCMode} selection efficiency (est. from data)")
-        self.histIsITSUPCModeEfficiency.Divide(self.histD0PtIsITSUPCModeAll)
-        """
+        # Apply reweighted correction factor
+        self.histCorrectedSpectrumReweighted = self.histRawYield.Clone()
+        self.histCorrectedSpectrumReweighted.SetName("histCorrectedSpectrumWithReweighting")
+        self.histCorrectedSpectrumReweighted.SetTitle("Corrected pT spectrum with reweighting")
+        self.histCorrectedSpectrumReweighted.GetYaxis().SetTitle("dN/dp_{T}")
+        self.histCorrectedSpectrumReweighted.Divide(self.efficiency)
+        self.histCorrectedSpectrumWithoutReweighting = self.histCorrectedSpectrum
+        self.histCorrectedSpectrumWithoutReweighting.SetLineColor(r.kRed)
+        self.histCorrectedSpectrumWithoutReweighting.SetTitle("Corrected spectrum, without reweighting")
+        self.histCorrectedSpectrum = self.histCorrectedSpectrumReweighted
 
     def calculate_track_cut_efficiencies(self, dqEfficiencyFilePath, **kwargs):
         """
@@ -1049,9 +1151,6 @@ class Analysis():
             "fullCommonCut" : "D0CommonTrackCuts"
         }
         trackCutNames.update(kwargs)
-
-        if (self.isITSUPCMode != 2):
-            print(f"WARNING: This analysis has specified isITSUPCMode={self.isITSUPCMode}. Make sure that the reconstructed level histograms used here account for this!")
 
         r.TH1.AddDirectory(r.kFALSE)
         file = r.TFile.Open(dqEfficiencyFilePath)
@@ -1111,8 +1210,6 @@ class Analysis():
         Calculate factorized efficiencies for some predefined (hardcoded) factorizations
         Total efficiency = N(rec. matched D0 after all cuts) / N(gen. D0 after BC cuts)
         """
-        if (self.isITSUPCMode != 2):
-            print(f"WARNING: This analysis has specified isITSUPCMode={self.isITSUPCMode}. Make sure that the reconstructed level histograms used here account for this!")
 
         # Prepare histograms
         if not hasattr(self, 'histD0PtGeneratedFinalBins'):
@@ -1250,16 +1347,16 @@ class Analysis():
         self.canvasEfficiency.cd(2)
         self.histD0PtMatched.Draw()
         self.canvasEfficiency.cd(3)
-        self.effRecOverGenFine.Draw()
+        self.efficiencyFine.Draw()
         self.canvasEfficiency.cd(4)
-        self.effRecOverGen.SetStats(0)
-        self.effRecOverGen.Draw()
+        self.efficiency.SetStats(0)
+        self.efficiency.Draw()
         if self.reweighting:
-            self.effRecOverGenWithoutReweighting.SetStats(0)
-            self.effRecOverGenWithoutReweighting.Draw("same")
+            self.efficiencyWithoutReweighting.SetStats(0)
+            self.efficiencyWithoutReweighting.Draw("same")
             self.legendEfficiency4 = r.TLegend(0.55, 0.15, 0.9, 0.3)
-            self.legendEfficiency4.AddEntry(self.effRecOverGen, "With reweighting")
-            self.legendEfficiency4.AddEntry(self.effRecOverGenWithoutReweighting, "Without reweighting")
+            self.legendEfficiency4.AddEntry(self.efficiency, "With reweighting")
+            self.legendEfficiency4.AddEntry(self.efficiencyWithoutReweighting, "Without reweighting")
             self.legendEfficiency4.SetBorderSize(0)
             self.legendEfficiency4.SetFillStyle(0)
             self.legendEfficiency4.Draw()
