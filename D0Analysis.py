@@ -1,4 +1,5 @@
 import ROOT as r
+from enum import Enum, auto
 import hist
 import uproot
 import numpy as np
@@ -747,30 +748,21 @@ class Analysis():
     """Class containing everything needed to calculate a D0 cross section from O2Physics output"""
 
     DEFAULT_RUNLIST = ['545367', '545345', '545332', '545312', '545311', '545296', '545294', '545291', '545289', '545262', '545249', '545246', '545223', '545222', '545210', '545185', '545184', '545171', '545117', '545103', '545086', '545064', '545063', '545062', '545060', '545047', '545044', '545042', '545041', '545009', '545008', '545004', '544992', '544991', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013']
+    class FileStructures(Enum):
+        RUNDIRS = auto()
+        FLAT = auto()
 
-    def __init__(self, pathTableReader, pathTableMaker, dirRec, dirGen, pathReflected = None, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, fileNameRec = None, fileNameGen=None, **kwargs):
+    def __init__(self, pathTableMaker, dirData, dirRec, dirGen, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, **kwargs):
         # The runList defines which files are looped over in run-by-run calculations
         self.runList = runList if runList is not None else Analysis.DEFAULT_RUNLIST
         self.runList = sorted(self.runList)
         print(f"This analysis contains {len(self.runList)} runs")
 
-        # Import files containing the necessary histograms, and check that these merged files contain only the runs in the runList
-        self.fileTableReader = r.TFile.Open(pathTableReader)
-        self.check_file_for_runs(self.fileTableReader, ['analysis-event-selection/output', 'Event_BeforeCuts', 'VtxZ_Run'])
+        # Import table-maker merged output file and check that it contains the correct runs
         self.fileTableMaker = r.TFile.Open(pathTableMaker)
         self.check_file_for_runs(self.fileTableMaker, ['bc-selection-task', 'hCounterTCE'])
-        if fileNameRec is not None:
-            self.fileRec = r.TFile.Open(f'{dirRec}/{fileNameRec}')
-            self.check_file_for_runs(self.fileRec, ['lumi-task', 'hCounterTCE'])
-        if fileNameGen is not None:
-            self.fileGen = r.TFile.Open(f'{dirGen}/{fileNameGen}')
-            self.check_file_for_runs(self.fileGen, ['lumi-task', 'hCounterTCE'])
-        if pathReflected is None:
-            self.fileReflected = self.fileRec
-        else:
-            self.fileReflected = r.TFile.Open(pathReflected)
-            self.check_file_for_runs(self.fileReflected, ['lumi-task', 'hCounterTCE'])
 
+        self.dirData = dirData
         self.dirRec = dirRec
         self.dirGen = dirGen
 
@@ -794,16 +786,14 @@ class Analysis():
         self.maxY = 0.9
         # Get the mass histograms needed for the signal extraction
         self.prepare_histograms()
-        # Set the range of the mass axis for plotting and integrating reflected background
-        self.massRange = [0., 4.]
         # Get the integrated luminosity from the bc-selection-task
-        self.histLumi = self.fileTableMaker.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
         self.lumi = self.histLumi.Integral() # 1/µb
         print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
         self.runByRunLumi = {}
         for run in self.runList:
            self.runByRunLumi[run] = self.histLumi.GetBinContent(self.histLumi.GetXaxis().FindBin(run)) 
-
+        # Set the range of the mass axis for plotting and integrating reflected background
+        self.massRange = [0., 4.]
         self.reweighting = False
 
     def check_file_for_runs(self, file, strings):
@@ -828,25 +818,40 @@ class Analysis():
     def prepare_histograms(self):
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
         self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
-        """
-        NEED TO LOOP OVER FILES RUN-BY-RUN -- CANNOT JUST GET ONE REC AND ONE GEN HISTOGRAM
-        # TODO: move the reco signal name to _KPiFromD0FS when ready
-        print(f"Histogram group name for reconstructed, matched D0: {self.groupNameD0PtMatched}")
 
-        """
-        self.histD0PtYGenerated = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0Generated).FindObject("MyMcPtYHisto")
+        self.histLumi = self.fileTableMaker.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
+
+        # Obtain the main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
+        fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
+        fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
+        fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
+        fullNamesGen.append(fullNameHistD0PtYGenerated)
+        self.dictGenHists = self.get_histograms(self.dirGen, fullNamesGen)
+        self.histD0PtYGenerated = self.dictGenHists[fullNameHistD0PtYGenerated]
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenerated = self.histD0PtYGenerated.ProjectionX(f"projPtMcGen_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
         self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY} < y < {self.maxY}")
-        # Data histogram
-        self.histD0MassPt = self.fileTableReader.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}").FindObject("MyMassPtHisto")
-        # Reconstructed lvl histogram used for the reflected background component
-        self.histD0PtMatched = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(self.groupNameD0PtMatched).FindObject("Pt")
+        # Data histograms
+        fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtHisto"
+        fullNameHistEventAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxZ"
+        tmpDict = self.get_histograms(self.dirData, [fullNameHistD0MassPt, fullNameHistEventAfterCuts])
+        self.histD0MassPt = tmpDict[fullNameHistD0MassPt]
+        self.histEventAfterCuts = tmpDict[fullNameHistEventAfterCuts]
+        del tmpDict
+        # Obtain the main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
+        fullNamesRec = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
+        fullNamesRec = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Pt" for fullNameRec in fullNamesRec]
+        fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
+        fullNamesRec.append(fullNameHistD0PtMatched)
+        fullNameHistD0MassPtReflected = "analysis-asymmetric-pairing/output;1/" + f"{self.groupNameD0PtMatched}Reflected" + "/MyMassPtHisto"
+        fullNamesRec.append(fullNameHistD0MassPtReflected)
+        self.dictRecHists = self.get_histograms(self.dirRec, fullNamesRec)
+        self.histD0PtMatched = self.dictRecHists[fullNameHistD0PtMatched]
         self.histD0PtMatched.SetName("histD0PtMatched")
         self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
-        self.histD0MassPtReflected = self.fileReflected.Get("analysis-asymmetric-pairing/output").FindObject(f"{self.groupNameD0PtMatched}Reflected").FindObject("MyMassPtHisto")
+        self.histD0MassPtReflected = self.dictRecHists[fullNameHistD0MassPtReflected]
 
         for i, bin in enumerate(self.ptBins):
             # Create an array of slices of the mass vs pT histogram and the MC reflected mass vs pT histogram
@@ -866,6 +871,81 @@ class Analysis():
             matchedLowerBin = self.histD0PtMatched.GetXaxis().FindBin(bin.lowerPt)
             matchedUpperBin = self.histD0PtMatched.GetXaxis().FindBin(bin.upperPt) - 1
             bin.nMatched = self.histD0PtMatched.Integral(matchedLowerBin, matchedUpperBin)
+
+    def get_histograms(self, directory, fullHistogramNames, histogramNamesfileStructure = None):
+        if histogramNamesfileStructure is None:
+            histogramNamesfileStructure = self.FileStructures.FLAT
+        splitHistNames = [s.split("/") for s in fullHistogramNames] 
+        namesDict = {}
+        for irow, row in enumerate(splitHistNames):
+            depth = len(row)
+            if row[1] == 'output;1':
+                depth -= 1
+                row[0] += ('/' + row[1])
+                row = np.delete(row, 1)
+            if depth == 3:
+                if row[0] not in namesDict:
+                    namesDict[row[0]] = {row[1] : []}
+                elif row[1] not in namesDict[row[0]]:
+                        namesDict[row[0]][row[1]] = []
+                namesDict[row[0]][row[1]].append(row[2])
+            elif depth == 2: # e. g. the lumi histogram
+                if row[0] not in namesDict:
+                    namesDict[row[0]] = []
+                namesDict[row[0]].append(row[1])
+
+            else:
+                raise Exception(f"Histogram name with depth = {depth}, don't know what to do!")
+
+        histograms = {}
+        print(f"Getting histograms from {directory}...")
+        if depth == 3:
+            for irun, run in enumerate(self.runList):
+                print(f"Processing run {run} ({irun+1}/{len(self.runList)})...            ", end='\r')
+                if (histogramNamesfileStructure == self.FileStructures.FLAT):
+                    filePath = f"{directory}/AnalysisResults_run{run}.root"
+                elif (histogramNamesfileStructure == self.FileStructures.RUNDIRS):
+                    filePath = f"{directory}/{run}/AnalysisResults.root"
+                else:
+                    raise Exception("Not a valid FileStructure!")
+                with uproot.open(filePath) as file:
+                    for dirName in namesDict.keys():
+                        dir = file[dirName]
+                        for i, item in enumerate(dir):
+                            if item.member("fName") in namesDict[dirName]:
+                                for ii, iitem in enumerate(dir[i]):
+                                    if iitem.member("fName") in namesDict[dirName][item.member("fName")]:
+                                        fullName = dirName + '/' + item.member("fName") + '/' + iitem.member("fName")
+                                        tmpHist = dir[i][ii]
+                                        tmpHistPr = tmpHist.to_pyroot()
+                                        if fullName not in histograms:
+                                            histograms[fullName] = tmpHistPr
+                                        else:
+                                            histograms[fullName].Add(tmpHistPr)
+        elif depth == 2:
+            for irun, run in enumerate(self.runList):
+                print(f"Processing run {run} ({irun+1}/{len(self.runList)})...            ", end='\r')
+                if (histogramNamesfileStructure == self.FileStructures.FLAT):
+                    filePath = f"{directory}/AnalysisResults_run{run}.root"
+                elif (histogramNamesfileStructure == self.FileStructures.RUNDIRS):
+                    filePath = f"{directory}/{run}/AnalysisResults.root"
+                else:
+                    raise Exception("Not a valid FileStructure!")
+                with uproot.open(filePath) as file:
+                    for dirName in namesDict.keys():
+                        dir = file[dirName]
+                        for i, item in enumerate(dir):
+                            if item.member("fName") in namesDict[dirName]:
+                                fullName = dirName + '/' + item.member("fName")
+                                tmpHist = dir[i]
+                                tmpHistPr = tmpHist.to_pyroot()
+                                if fullName not in histograms:
+                                    histograms[fullName] = tmpHistPr
+                                else:
+                                    histograms[fullName].Add(tmpHistPr)
+
+        print("\nDone!")
+        return histograms
 
     def fit_inv_mass(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = []):
         self.ptBins[bin].fitRange = fitRange
@@ -1133,7 +1213,7 @@ class Analysis():
         self.histCorrectedSpectrumWithoutReweighting.SetTitle("Corrected spectrum, without reweighting")
         self.histCorrectedSpectrum = self.histCorrectedSpectrumReweighted
 
-    def calculate_track_cut_efficiencies(self, dqEfficiencyFilePath, **kwargs):
+    def calculate_track_cut_efficiencies(self, directory, **kwargs):
         """
         Calculate partial efficiencies for track cuts
         """
@@ -1153,53 +1233,60 @@ class Analysis():
         trackCutNames.update(kwargs)
 
         r.TH1.AddDirectory(r.kFALSE)
-        file = r.TFile.Open(dqEfficiencyFilePath)
         self.trackCutEfficiencies = []
+        fullNames = ["noTrackCut:noTrackCut", 
+                     f"{trackCutNames['kaonTPCCut']}:noTrackCut", f"{trackCutNames['kaonTOFCut']}:noTrackCut", 
+                     f"noTrackCut:noTrackCut_{trackCutNames['etaCut']}", f"noTrackCut:noTrackCut_{trackCutNames['ptCut']}",
+                     f"noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}", f"noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}",
+                     f"noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}", f"noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}",
+                     f"{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}"]
+        fullNames = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullName + "_KPiFromD0FS/Pt" for fullName in fullNames]
+        tmpDict = self.get_histograms(directory, fullNames)
         # Reconstructed, matched D0 in selected events, but with no track or pair cuts. This is the denominator for all partial efficiencies due to track cuts
-        histDenom = file.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0").FindObject("Pt")
+        histDenom = tmpDict["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS/Pt"]
         histDenom = histDenom.Rebin(len(self.ptBinsArray) - 1, histDenom.GetName(), np.asarray(self.ptBinsArray, 'd'))
 
-        histD0PtKaonTPC = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{trackCutNames['kaonTPCCut']}:noTrackCut_KPiFromD0").FindObject("Pt")
+        histD0PtKaonTPC = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTPCCut']}:noTrackCut_KPiFromD0FS/Pt"]
         histD0PtKaonTPC = histD0PtKaonTPC.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTPC.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., kaon TPC nSigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTPC, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtKaonTOF = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{trackCutNames['kaonTOFCut']}:noTrackCut_KPiFromD0").FindObject("Pt")
+        histD0PtKaonTOF = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTOFCut']}:noTrackCut_KPiFromD0FS/Pt"]
         histD0PtKaonTOF = histD0PtKaonTOF.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTOF.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., kaon TOF nSigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTOF, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtEtaCut = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['etaCut']}_KPiFromD0").FindObject("Pt")
+        histD0PtEtaCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['etaCut']}_KPiFromD0FS/Pt"]
         histD0PtEtaCut = histD0PtEtaCut.Rebin(len(self.ptBinsArray) - 1, histD0PtEtaCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track |eta|<0.9", "Rec. matched D0 in sel evt.", histD0PtEtaCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtPtCut = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['ptCut']}_KPiFromD0").FindObject("Pt")
+        histD0PtPtCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['ptCut']}_KPiFromD0FS/Pt"]
         histD0PtPtCut = histD0PtPtCut.Rebin(len(self.ptBinsArray) - 1, histD0PtPtCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track pT>0.5 GeV/c", "Rec. matched D0 in sel evt.", histD0PtPtCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtITSibCut = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}_KPiFromD0").FindObject("Pt")
+        histD0PtITSibCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}_KPiFromD0FS/Pt"]
         histD0PtITSibCut = histD0PtITSibCut.Rebin(len(self.ptBinsArray) - 1, histD0PtITSibCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track IsITSibAny=1", "Rec. matched D0 in sel evt.", histD0PtITSibCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtTPCnclsCut = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}_KPiFromD0").FindObject("Pt")
+        histD0PtTPCnclsCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}_KPiFromD0FS/Pt"]
         histD0PtTPCnclsCut = histD0PtTPCnclsCut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCnclsCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track TPC nCls > 50", "Rec. matched D0 in sel evt.", histD0PtTPCnclsCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtDCAzCut = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}_KPiFromD0").FindObject("Pt")
+        histD0PtDCAzCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}_KPiFromD0FS/Pt"]
         histD0PtDCAzCut = histD0PtDCAzCut.Rebin(len(self.ptBinsArray) - 1, histD0PtDCAzCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track |DCAz| < 0.3 cm", "Rec. matched D0 in sel evt.", histD0PtDCAzCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtTPCchi2Cut = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}_KPiFromD0").FindObject("Pt")
+        histD0PtTPCchi2Cut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}_KPiFromD0FS/Pt"]
         histD0PtTPCchi2Cut = histD0PtTPCchi2Cut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCchi2Cut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track TPCchi2 < 4", "Rec. matched D0 in sel evt.", histD0PtTPCchi2Cut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtAllTrackCuts = file.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}_KPiFromD0").FindObject("Pt")
+        histD0PtAllTrackCuts = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}_KPiFromD0FS/Pt"]
         histD0PtAllTrackCuts = histD0PtAllTrackCuts.Rebin(len(self.ptBinsArray) - 1, histD0PtAllTrackCuts.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., after all track cuts", "Rec. matched D0 in sel evt.", histD0PtAllTrackCuts, histDenom)
         self.trackCutEfficiencies.append(eff)
@@ -1215,37 +1302,51 @@ class Analysis():
         if not hasattr(self, 'histD0PtGeneratedFinalBins'):
             self.histD0PtGeneratedFinalBins = self.histD0PtGenerated.Rebin(len(self.ptBinsArray) - 1, f"projPtMcGenFinalBins_y_{self.minY}_{self.maxY}", np.asarray(self.ptBinsArray, 'd'))
 
-        self.histD0PtYGenInRecEvent = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject("MCTruthGenRec_D0FS").FindObject("MyMcPtYHisto")
+        self.histD0PtYGenInRecEvent = self.dictGenHists[f"analysis-asymmetric-pairing/output;1/MCTruthGenRec_D0FS/PtMC_YMC"]
         lowerYBin = self.histD0PtYGenInRecEvent.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenInRecEvent.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenInRecEvent = self.histD0PtYGenInRecEvent.ProjectionX(f"projPtMcGenInRecEvent_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
         self.histD0PtGenInRecEvent.SetTitle(f"Generated D0 in reconstructed event, {self.minY} < y < {self.maxY}")
         self.histD0PtGenInRecEvent = self.histD0PtGenInRecEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInRecEventFinalBins", np.asarray(self.ptBinsArray, 'd'))
 
-        self.histD0PtYGenInSelEvent = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject("MCTruthGenSel_D0FS").FindObject("MyMcPtYHisto")
+        self.histD0PtYGenInSelEvent = self.dictGenHists[f"analysis-asymmetric-pairing/output;1/MCTruthGenSel_D0FS/PtMC_YMC"]
         lowerYBin = self.histD0PtYGenInSelEvent.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenInSelEvent.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenInSelEvent = self.histD0PtYGenInSelEvent.ProjectionX(f"projPtMcGenInSelEvent_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
         self.histD0PtGenInSelEvent.SetTitle(f"Generated D0 in selected event, {self.minY} < y < {self.maxY}")
         self.histD0PtGenInSelEvent = self.histD0PtGenInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInSelEventFinalBins", np.asarray(self.ptBinsArray, 'd'))
 
-        self.histD0PtYGenInSelEventDaughtersInAcc = self.fileGen.Get("analysis-asymmetric-pairing/output").FindObject("MCTruthGenSelDaughtersInAcc_KPiFromD0FS").FindObject("MyMcPtYHisto")
+        self.histD0PtYGenInSelEventDaughtersInAcc = self.dictGenHists[f"analysis-asymmetric-pairing/output;1/MCTruthGenSelDaughtersInAcc_KPiFromD0FS/PtMC_YMC"]
         lowerYBin = self.histD0PtYGenInSelEventDaughtersInAcc.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenInSelEventDaughtersInAcc.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenInSelEventDaughtersInAcc = self.histD0PtYGenInSelEventDaughtersInAcc.ProjectionX(f"projPtMcGenInSelEventDaughtersInAcc_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
         self.histD0PtGenInSelEventDaughtersInAcc.SetTitle(f"Generated D0 in selected event with both daughters in acceptance, {self.minY} < y < {self.maxY}")
         self.histD0PtGenInSelEventDaughtersInAcc = self.histD0PtGenInSelEventDaughtersInAcc.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInSelEventDaughtersInAccFinalBins", np.asarray(self.ptBinsArray, 'd'))
 
-        self.histD0PtMatchedInSelEvent = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0").FindObject("Pt")
+        self.histD0PtYGenInRecEventDaughtersInAcc = self.dictGenHists[f"analysis-asymmetric-pairing/output;1/MCTruthGenRecDaughtersInAcc_KPiFromD0FS/PtMC_YMC"]
+        lowerYBin = self.histD0PtYGenInRecEventDaughtersInAcc.GetYaxis().FindBin(self.minY)
+        upperYBin = self.histD0PtYGenInRecEventDaughtersInAcc.GetYaxis().FindBin(self.maxY) - 1
+        self.histD0PtGenInRecEventDaughtersInAcc = self.histD0PtYGenInRecEventDaughtersInAcc.ProjectionX(f"projPtMcGenInRecEventDaughtersInAcc_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
+        self.histD0PtGenInRecEventDaughtersInAcc.SetTitle(f"Generated D0 in selected event with both daughters in acceptance, {self.minY} < y < {self.maxY}")
+        self.histD0PtGenInRecEventDaughtersInAcc = self.histD0PtGenInRecEventDaughtersInAcc.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenInRecEventDaughtersInAccFinalBins", np.asarray(self.ptBinsArray, 'd'))
+
+        self.histD0PtYGenAfterBcCutsDaughtersInAcc = self.dictGenHists[f"analysis-asymmetric-pairing/output;1/MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS/PtMC_YMC"]
+        lowerYBin = self.histD0PtYGenAfterBcCutsDaughtersInAcc.GetYaxis().FindBin(self.minY)
+        upperYBin = self.histD0PtYGenAfterBcCutsDaughtersInAcc.GetYaxis().FindBin(self.maxY) - 1
+        self.histD0PtGenAfterBcCutsDaughtersInAcc = self.histD0PtYGenAfterBcCutsDaughtersInAcc.ProjectionX(f"projPtMcGenAfterBcCutsDaughtersInAcc_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
+        self.histD0PtGenAfterBcCutsDaughtersInAcc.SetTitle(f"Generated D0 in selected event with both daughters in acceptance, {self.minY} < y < {self.maxY}")
+        self.histD0PtGenAfterBcCutsDaughtersInAcc = self.histD0PtGenAfterBcCutsDaughtersInAcc.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenAfterBcCutsDaughtersInAccFinalBins", np.asarray(self.ptBinsArray, 'd'))
+
+        self.histD0PtMatchedInSelEvent = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS/Pt"]
         self.histD0PtMatchedInSelEvent = self.histD0PtMatchedInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEvent", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtMatchedInSelEvent.SetTitle("Reconstructed, matched D0->Kpi in selected event, no track or pair cuts")
 
-        self.histD0PtMatchedInSelEventAfterTrackCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_KPiFromD0").FindObject("Pt")
+        self.histD0PtMatchedInSelEventAfterTrackCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_KPiFromD0FS/Pt"]
         self.histD0PtMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCuts.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEventAfterTrackCuts", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
 
         if not hasattr(self, 'histD0PtMatchedFinalBins'):
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.fileRec.Get("analysis-asymmetric-pairing/output").FindObject(f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0").FindObject("Pt")
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS/Pt"]
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Rebin(len(self.ptBinsArray) - 1, "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", np.asarray(self.ptBinsArray, 'd'))
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
         else:
@@ -1265,10 +1366,10 @@ class Analysis():
         del eff
 
         eff = FactorizedEfficiency(6)
-        eff.add_factor("Gen. D0 in rec. evt.", "Gen. D0 in lumi", self.histD0PtGenInRecEvent, self.histD0PtGeneratedFinalBins)
-        eff.add_factor("Gen. D0 in sel. evt.", "Gen. D0 in rec. evt.", self.histD0PtGenInSelEvent, self.histD0PtGenInRecEvent)
-        eff.add_factor("Gen. D0 in sel. evt., daughters in acc.", "Gen. D0 in sel. evt.", self.histD0PtGenInSelEventDaughtersInAcc, self.histD0PtGenInSelEvent)
-        eff.add_factor("Rec. matched D0 in sel. evt", "Gen. D0 in sel. evt., daughters in acc.", self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEventDaughtersInAcc)
+        eff.add_factor("Gen. D0 in lumi w/ accepted daughters", "Gen. D0 in lumi", self.histD0PtGenAfterBcCutsDaughtersInAcc, self.histD0PtGeneratedFinalBins)
+        eff.add_factor("Gen. D0 in rec. evt. w/ accepted daughters", "Gen. D0 in lumi w/ accepted daughters", self.histD0PtGenInRecEventDaughtersInAcc, self.histD0PtGenAfterBcCutsDaughtersInAcc)
+        eff.add_factor("Gen. D0 in sel. evt. w/ accepted daughters", "Gen. D0 in rec. evt. w/ accepted daughters", self.histD0PtGenInSelEventDaughtersInAcc, self.histD0PtGenInRecEventDaughtersInAcc)
+        eff.add_factor("Rec. matched D0 in sel. evt", "Gen. D0 in sel. evt. w/ accepted daughters", self.histD0PtMatchedInSelEvent, self.histD0PtGenInSelEventDaughtersInAcc)
         eff.add_factor("Rec. matched D0 in sel. evt. after track cuts", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEvent)
         eff.add_factor("Rec. matched D0 in sel. evt. after track and pair cuts", "Rec. matched D0 in sel. evt. after track cuts", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts)
         eff.calculate_total_efficiency()
@@ -1286,8 +1387,7 @@ class Analysis():
         self.histRawYield.SetStats(0)
 
     def calculate_spectrum_per_event(self):
-        histEventsAfterCuts = self.fileTableReader.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("VtxZ")
-        self.nEvents = histEventsAfterCuts.GetEntries()
+        self.nEvents = self.histEventAfterCuts.GetEntries()
         self.histCorrectedSpectrumPerEvent = self.histCorrectedSpectrum.Clone()
         self.histCorrectedSpectrumPerEvent.SetName("histCorrectedSpectrumPerEvent")
         self.histCorrectedSpectrumPerEvent.SetTitle("Corrected pT spectrum normalized by number of events")
