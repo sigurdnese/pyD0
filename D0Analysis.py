@@ -720,7 +720,7 @@ class PtBin():
         self.lowerPt = lowerPt
         self.upperPt = upperPt
 
-    def create_fit_results(self, lowMass, highMass):
+    def create_fit_results(self, lowMass, highMass, doPrint=True):
         try:
             self.fitChi2Ndf = self.fitFunc.GetChisquare() / self.fitFunc.GetNDF()
         except:
@@ -732,15 +732,18 @@ class PtBin():
         self.fitMu = self.fitFunc.GetParameter('Mean')
         self.fitSigma = self.fitFunc.GetParameter("Sigma")
         self.nSignal = self.signalFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / self.massPtSlice.GetBinWidth(1)
-        print(f"bin {self.index} nSignal = {self.nSignal} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
+        if doPrint:
+            print(f"bin {self.index} nSignal = {self.nSignal} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
         self.nCombBackground = self.backgroundFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / self.massPtSlice.GetBinWidth(1)
-        print(f"bin {self.index} nCombBackground = {self.nCombBackground} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
+        if doPrint:
+            print(f"bin {self.index} nCombBackground = {self.nCombBackground} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
         self.nReflBackground = self.dataReflFunc.Integral(lowMass, highMass) / self.massPtSlice.GetBinWidth(1)
         if (self.dataReflFunc.Eval(lowMass) > 1e-6):
             print(f"WARNING: dataReflFunc({lowMass}) = {self.dataReflFunc.Eval(lowMass)}, normalization of reflected background may be inaccurate")
         if (self.dataReflFunc.Eval(highMass) > 1e-6):
             print(f"WARNING: dataReflFunc({highMass}) = {self.dataReflFunc.Eval(highMass)}, normalization of reflected background may be inaccurate")
-        print(f"bin {self.index} nReflBackground = {self.nReflBackground} was calculated by integration from {lowMass} to {highMass}")
+        if doPrint:
+            print(f"bin {self.index} nReflBackground = {self.nReflBackground} was calculated by integration from {lowMass} to {highMass}")
         self.nBackground = self.nCombBackground + self.nReflBackground
         self.relativeStatError = np.sqrt(self.nSignal + self.nBackground) / self.nSignal
         
@@ -910,7 +913,10 @@ class Analysis():
                     raise Exception("Not a valid FileStructure!")
                 with uproot.open(filePath) as file:
                     for dirName in namesDict.keys():
-                        dir = file[dirName]
+                        try:
+                            dir = file[dirName]
+                        except:
+                            raise Exception(f"Couldn't get '{dirName}' from file '{filePath}'!")
                         for i, item in enumerate(dir):
                             if item.member("fName") in namesDict[dirName]:
                                 for ii, iitem in enumerate(dir[i]):
@@ -947,9 +953,10 @@ class Analysis():
         print("\nDone!")
         return histograms
 
-    def fit_inv_mass(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = []):
+    def fit_inv_mass(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = [], doPrint=True):
         self.ptBins[bin].fitRange = fitRange
-        print(f"====== Fitting bin {bin} ({self.ptBins[bin].lowerPt} < pT < {self.ptBins[bin].upperPt} GeV/c) ======")
+        if doPrint:
+            print(f"====== Fitting bin {bin} ({self.ptBins[bin].lowerPt} < pT < {self.ptBins[bin].upperPt} GeV/c) ======")
         # Fit the reflected MC histogram with a double Gaussian
         reflFunc = r.TF1(f"fDoubleGauss_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2) + [3]*exp(-0.5*((x-[4])/[5])^2)", self.massRange[0], self.massRange[1])
         reflFunc.SetParameters(1, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2, 1, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2)
@@ -962,8 +969,9 @@ class Analysis():
         reflFunc.SetParLimits(4, self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmin(), self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmax())
         reflFunc.SetParLimits(2, 0, 0.2)
         reflFunc.SetParLimits(5, 0, 0.2)
-        print("---- Fitting MC matched, reflected ----")
-        self.ptBins[bin].massPtSliceReflected.Fit(reflFunc, "LR0")
+        if doPrint:
+            print("---- Fitting MC matched, reflected ----")
+        self.ptBins[bin].massPtSliceReflected.Fit(reflFunc, "LR0" + ("Q" if not doPrint else ""))
         self.ptBins[bin].reflFunc = reflFunc
 
         self.ptBins[bin].reflectedRatio = self.ptBins[bin].massPtSliceReflected.GetEntries() / self.ptBins[bin].nMatched
@@ -1022,8 +1030,9 @@ class Analysis():
             raise Exception(f"Invalid background function '{backgroundName}'")
 
         # Fit the histogram
-        print("---- Fitting data ----")
-        self.ptBins[bin].fitResult = self.ptBins[bin].massPtSlice.Fit(fitFunc, "L0S", "", fitRange[0], fitRange[1])
+        if doPrint:
+            print("---- Fitting data ----")
+        self.ptBins[bin].fitResult = self.ptBins[bin].massPtSlice.Fit(fitFunc, "L0S" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
 
         # Obtain the signal and background functions separately
         signalFunc = r.TF1(f"signalFunc_bin{bin}", "[0]*exp(-0.5*((x-[2])/[1])^2)", self.massRange[0], self.massRange[1])
@@ -1049,7 +1058,7 @@ class Analysis():
         self.ptBins[bin].signalFunc = signalFunc
         self.ptBins[bin].backgroundFunc = backgroundFunc
         self.ptBins[bin].dataReflFunc = dataReflFunc
-        self.ptBins[bin].create_fit_results(self.massRange[0], self.massRange[1])
+        self.ptBins[bin].create_fit_results(self.massRange[0], self.massRange[1], doPrint=doPrint)
 
     def calculate_efficiency_runbyrun(self, weights='lumi'):
         """
@@ -1394,6 +1403,8 @@ class Analysis():
         self.histCorrectedSpectrumPerEvent.Scale(1. / (self.maxY - self.minY)) # Divide by dy
         self.histCorrectedSpectrumPerEvent.Scale(1. / self.nEvents) # Normalize by number of events
         self.histCorrectedSpectrumPerEvent.GetYaxis().SetTitle("1/N_{events} d^{2}N/dp_{T}dy")
+        if hasattr(self, 'canvasPtSpectrumPerEvent'):
+            del self.canvasPtSpectrumPerEvent
         self.canvasPtSpectrumPerEvent = r.TCanvas("canvasPtSpectrumPerEvent")
         self.canvasPtSpectrumPerEvent.cd()
         self.histCorrectedSpectrumPerEvent.Draw()
@@ -1409,6 +1420,8 @@ class Analysis():
         self.histRawYieldPerLumi.GetYaxis().SetTitle("Raw D^{0} yield / L_{int} (mb/GeV c^{-1})")
         self.histRawYieldPerLumi.SetStats(0)
         if draw:
+            if hasattr(self, 'canvasRawYieldPerLumi'):
+                del self.canvasRawYieldPerLumi
             self.canvasRawYieldPerLumi = r.TCanvas("canvasRawYieldPerLumi")
             self.canvasRawYieldPerLumi.cd()
             self.histRawYieldPerLumi.Draw()
@@ -1433,6 +1446,8 @@ class Analysis():
         self.histCrossSection.Scale(1. / self.lumi) # µb / GeVc^-1
         self.histCrossSection.Scale(1. / 1000.) # mb / GeVc^-1
         self.histCrossSection.GetYaxis().SetTitle("d^{2}#sigma/dp_{T}dy (mb/GeVc^{-1})")
+        if hasattr(self, 'canvasCrossSection'):
+            del self.canvasCrossSection
         self.canvasCrossSection = r.TCanvas("canvasCrossSection")
         self.canvasCrossSection.cd()
         self.histCrossSection.Draw()
@@ -1440,6 +1455,8 @@ class Analysis():
         self.canvasCrossSection.Draw()
 
     def draw_efficiency(self):
+        if hasattr(self, 'canvasEfficiency'):
+            del self.canvasEfficiency
         self.canvasEfficiency = r.TCanvas("canvasEfficiency", "canvasEfficiency", 1200, 666)
         self.canvasEfficiency.Divide(3, 2, 0.002, 0.01)
         self.canvasEfficiency.cd(1)
@@ -1492,6 +1509,8 @@ class Analysis():
         # Figure out grid layout
         nPanels = len(self.ptBins) + 1
         nRows = int(np.ceil(nPanels/3))
+        if hasattr(self, 'canvasFitsYields'):
+            del self.canvasFitsYields
         self.canvasFitsYields = r.TCanvas("canvasFitsYields", "canvasFitsYields", 1200, nRows * 333)
         self.canvasFitsYields.Divide(3, nRows, 0.002, 0.01)
 
@@ -1554,6 +1573,8 @@ class Analysis():
         # Figure out grid layout
         nPanels = len(self.ptBins)
         nRows = int(np.ceil(nPanels/3))
+        if hasattr(self, 'canvasReflFits'):
+            del self.canvasReflFits
         self.canvasReflFits = r.TCanvas("canvasReflFits", "canvasReflFits", 1200, nRows * 333)
         self.canvasReflFits.Divide(3, nRows, 0.002, 0.01)
 
