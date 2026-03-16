@@ -5,6 +5,168 @@ import uproot
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from deprecated import deprecated
+from . import fit_functions
+from . import utils
+
+# Direct all prints in ROOT through its internal error handler (fix 'Q' option in TH1.Fit)
+r.gPrintViaErrorHandler = True
+
+DEFAULT_RUNLIST = ['545367', '545345', '545332', '545312', '545311', '545296', '545294', '545291', '545289', '545262', '545249', '545246', '545223', '545222', '545210', '545185', '545184', '545171', '545117', '545103', '545086', '545064', '545063', '545062', '545060', '545047', '545044', '545042', '545041', '545009', '545008', '545004', '544992', '544991', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013']
+
+class FileStructures(Enum):
+    RUNDIRS = auto()
+    FLAT = auto()
+
+def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStructure = None):
+    if histogramNamesfileStructure is None:
+        histogramNamesfileStructure = FileStructures.FLAT
+    splitHistNames = [s.split("/") for s in fullHistogramNames] 
+    namesDict = {}
+    for irow, row in enumerate(splitHistNames):
+        depth = len(row)
+        if row[1] == 'output;1':
+            depth -= 1
+            row[0] += ('/' + row[1])
+            row = np.delete(row, 1)
+        if depth == 3:
+            if row[0] not in namesDict:
+                namesDict[row[0]] = {row[1] : []}
+            elif row[1] not in namesDict[row[0]]:
+                namesDict[row[0]][row[1]] = []
+            namesDict[row[0]][row[1]].append(row[2])
+        elif depth == 2: # e. g. the lumi histogram
+            if row[0] not in namesDict:
+                namesDict[row[0]] = []
+            namesDict[row[0]].append(row[1])
+
+        else:
+            raise Exception(f"Histogram name with depth = {depth}, don't know what to do!")
+
+    histograms = {}
+    print(f"Getting histograms from {directory}...")
+    if depth == 3:
+        for irun, run in enumerate(runList):
+            print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+            if (histogramNamesfileStructure == FileStructures.FLAT):
+                filePath = f"{directory}/AnalysisResults_run{run}.root"
+            elif (histogramNamesfileStructure == FileStructures.RUNDIRS):
+                filePath = f"{directory}/{run}/AnalysisResults.root"
+            else:
+                raise Exception("Not a valid FileStructure!")
+            with uproot.open(filePath) as file:
+                for dirName in namesDict.keys():
+                    try:
+                        dir = file[dirName]
+                    except:
+                        raise Exception(f"Couldn't get '{dirName}' from file '{filePath}'!")
+                    for i, item in enumerate(dir):
+                        if item.member("fName") in namesDict[dirName]:
+                            for ii, iitem in enumerate(dir[i]):
+                                if iitem.member("fName") in namesDict[dirName][item.member("fName")]:
+                                    fullName = dirName + '/' + item.member("fName") + '/' + iitem.member("fName")
+                                    tmpHist = dir[i][ii]
+                                    tmpHistWritable = tmpHist.to_writable()
+                                    tmpHistPr = tmpHistWritable.to_pyroot()
+                                    if tmpHistPr.GetEntries() == 0:
+                                        print(f"WARNING: Histogram '{fullName}' in '{filePath}' has no entries!")
+                                    if fullName not in histograms:
+                                        histograms[fullName] = tmpHistPr
+                                    else:
+                                        histograms[fullName].Add(tmpHistPr)
+    elif depth == 2:
+        for irun, run in enumerate(runList):
+            print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+            if (histogramNamesfileStructure == FileStructures.FLAT):
+                filePath = f"{directory}/AnalysisResults_run{run}.root"
+            elif (histogramNamesfileStructure == FileStructures.RUNDIRS):
+                filePath = f"{directory}/{run}/AnalysisResults.root"
+            else:
+                raise Exception("Not a valid FileStructure!")
+            with uproot.open(filePath) as file:
+                for dirName in namesDict.keys():
+                    dir = file[dirName]
+                    for i, item in enumerate(dir):
+                        if item.member("fName") in namesDict[dirName]:
+                            fullName = dirName + '/' + item.member("fName")
+                            tmpHist = dir[i]
+                            tmpHistWritable = tmpHist.to_writable()
+                            tmpHistPr = tmpHistWritable.to_pyroot()
+                            if fullName not in histograms:
+                                histograms[fullName] = tmpHistPr
+                            else:
+                                histograms[fullName].Add(tmpHistPr)
+
+    print("\nDone!")
+    return histograms
+
+def build_histograms_map(filePath):
+    histogramsMap = {}
+    print(f"Using {filePath} to create map of histograms")
+    with uproot.open(filePath) as file:
+        for dirName in [key for key in file.keys() if "output" in key]:
+            dir = file[dirName]
+            for i, item in enumerate(dir):
+                for ii, iitem in enumerate(dir[i]):
+                    fullName = dirName + '/' + item.member("fName") + '/' + iitem.member("fName")
+                    histogramsMap[fullName] = {'dir': dirName, 'group': i, 'hist': ii}
+
+    return histogramsMap
+
+def get_histograms_from_file(filePath, fullHistogramNames):
+    splitHistNames = [s.split("/") for s in fullHistogramNames] 
+    namesDict = {}
+    for irow, row in enumerate(splitHistNames):
+        depth = len(row)
+        if row[1] == 'output;1':
+            depth -= 1
+            row[0] += ('/' + row[1])
+            row = np.delete(row, 1)
+        if depth == 3:
+            if row[0] not in namesDict:
+                namesDict[row[0]] = {row[1] : []}
+            elif row[1] not in namesDict[row[0]]:
+                namesDict[row[0]][row[1]] = []
+            namesDict[row[0]][row[1]].append(row[2])
+        elif depth == 2: # e. g. the lumi histogram
+            if row[0] not in namesDict:
+                namesDict[row[0]] = []
+            namesDict[row[0]].append(row[1])
+
+        else:
+            raise Exception(f"Histogram name with depth = {depth}, don't know what to do!")
+
+    histograms = {}
+    if depth == 3:
+        with uproot.open(filePath) as file:
+            for dirName in namesDict.keys():
+                try:
+                    dir = file[dirName]
+                except:
+                    raise Exception(f"Couldn't get '{dirName}' from file '{filePath}'!")
+                for i, item in enumerate(dir):
+                    if item.member("fName") in namesDict[dirName]:
+                        for ii, iitem in enumerate(dir[i]):
+                            if iitem.member("fName") in namesDict[dirName][item.member("fName")]:
+                                fullName = dirName + '/' + item.member("fName") + '/' + iitem.member("fName")
+                                tmpHist = dir[i][ii]
+                                tmpHistWritable = tmpHist.to_writable()
+                                tmpHistPr = tmpHistWritable.to_pyroot()
+                                histograms[fullName] = tmpHistPr
+
+    elif depth == 2:
+            with uproot.open(filePath) as file:
+                for dirName in namesDict.keys():
+                    dir = file[dirName]
+                    for i, item in enumerate(dir):
+                        if item.member("fName") in namesDict[dirName]:
+                            fullName = dirName + '/' + item.member("fName")
+                            tmpHist = dir[i]
+                            tmpHistWritable = tmpHist.to_writable()
+                            tmpHistPr = tmpHistWritable.to_pyroot()
+                            histograms[fullName] = tmpHistPr
+
+    return histograms
 
 def compare_efficiency_upcmode(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorFilepathNo, denominatorFilepathNo, numeratorFilepathYes, denominatorFilepathYes):
     """
@@ -629,6 +791,214 @@ def run_by_run_tof_matching_efficiency(runListFull, runListNo, runListYes, runLi
     testFile.Close()
     return {'runList': runListFull, 'runAxis': runAxis, 'values': listMeanHasTOF, 'errors': listMeanHasTOFErrors, 'colors': listColors, 'textColors': listTextColors, 'dictColors': dictColors, 'minPt': minPt, 'maxPt': maxPt, 'minEta': minEta, 'maxEta': maxEta}
 
+class OccupancyStudy():
+    def __init__(self, fileDirectory=None, filePath=None, runList=DEFAULT_RUNLIST.copy(),
+                 histName="analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut/MyD0OccupHisto",
+                 contribBins=[0, 2000, 4000, 20000], timeBins=[-100, -40, 40, 100]):
+        self.massRange = [0., 4.]
+        if filePath is None:
+            self.histOrig = get_histograms(fileDirectory, runList, [histName], histogramNamesfileStructure=FileStructures.RUNDIRS)[histName]
+        else:
+            tmpFile = r.TFile.Open(filePath)
+            self.histOrig = tmpFile.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyD0OccupHisto")
+        # For now, integrate over pT
+        self.hist = self.histOrig.Projection(0, 2, 3)
+        # Make slices of the occupancy variable
+        self.slices = {}
+        self.fitResults = {}
+        self.textBoxes = {}
+        massBins = [self.hist.GetXaxis().GetBinLowEdge(1+i) for i in range(self.hist.GetXaxis().GetNbins())]
+        massBins.append(self.hist.GetXaxis().GetBinLowEdge(self.hist.GetXaxis().GetNbins()))
+        massBins = np.array(massBins, dtype='d')
+        self.histRebinned = r.TH3D(f"{self.hist.GetName()}_rebinned", f"{self.hist.GetTitle()}",
+                                   self.hist.GetXaxis().GetNbins(), massBins,
+                                   len(contribBins) - 1, np.array(contribBins, dtype='d'),
+                                   len(timeBins) - 1, np.array(timeBins, dtype='d'))
+        self.histRebinned.SetDirectory(0)
+        for ix in range(1, self.hist.GetXaxis().GetNbins() + 1):
+            x = self.hist.GetXaxis().GetBinCenter(ix)
+            for iy in range(1, self.hist.GetYaxis().GetNbins() + 1):
+                y = self.hist.GetYaxis().GetBinCenter(iy)
+                for iz in range(1, self.hist.GetZaxis().GetNbins() + 1):
+                    z = self.hist.GetZaxis().GetBinCenter(iz)
+                    val = self.hist.GetBinContent(ix, iy, iz)
+                    err = self.hist.GetBinError(ix, iy, iz)
+                    if val == 0 and err == 0:
+                        continue
+                    # Find target bin in rebinned histogram
+                    ix_new = self.histRebinned.GetXaxis().FindBin(x)
+                    iy_new = self.histRebinned.GetYaxis().FindBin(y)
+                    iz_new = self.histRebinned.GetZaxis().FindBin(z)
+                    # Current values in the target bin
+                    old_val = self.histRebinned.GetBinContent(ix_new, iy_new, iz_new)
+                    old_err = self.histRebinned.GetBinError(ix_new, iy_new, iz_new)
+                    # New accumulated content and error
+                    new_val = old_val + val
+                    new_err = (old_err**2 + err**2)**0.5  # sum errors in quadrature
+                    self.histRebinned.SetBinContent(ix_new, iy_new, iz_new, new_val)
+                    self.histRebinned.SetBinError(ix_new, iy_new, iz_new, new_err)
+
+        for i in range(1, self.histRebinned.GetYaxis().GetNbins() + 1):
+            for j in range(1, self.histRebinned.GetZaxis().GetNbins() + 1):
+                tmpHist = self.histRebinned.ProjectionX(f"{i}_{j}", iymin=i, iymax=i, izmin=j, izmax=j)
+                tmpHist.SetTitle(f"{self.histRebinned.GetYaxis().GetBinLowEdge(i)}<NTPCcontribLongA<{self.histRebinned.GetYaxis().GetBinUpEdge(i)}, {self.histRebinned.GetZaxis().GetBinLowEdge(j)}<NTPCmedianTimeLongA<{self.histRebinned.GetZaxis().GetBinUpEdge(j)}")
+                h = tmpHist.Clone(f"{self.histRebinned.GetName()}_{i}_{j}")
+                h.SetDirectory(0)
+                self.slices[(i,j)] = h
+
+    def draw_inv_mass(self):
+        nW = self.histRebinned.GetYaxis().GetNbins()
+        nH = self.histRebinned.GetZaxis().GetNbins()
+        self.cGridInvM = r.TCanvas('cGridInvM', 'cGridInvM', 500*nW, 400*nH)
+        self.cGridInvM.Divide(nW, nH, 1e-10, 1e-10)
+        for i in range(1, self.histRebinned.GetYaxis().GetNbins() + 1):
+            for j in range(1, self.histRebinned.GetZaxis().GetNbins() + 1):
+                self.cGridInvM.cd(i + nW*(j-1))
+                self.slices[(i,j)].Draw()
+                if (i,j) in self.fitResults:
+                    self.textBoxes[(i,j)] = r.TPaveText(0.15, 0.15, 0.5, 0.5, "NDC")
+                    self.textBoxes[(i,j)].SetName(f"textbox_{i}_{j}")
+                    self.textBoxes[(i,j)].SetFillColor(0)
+                    self.textBoxes[(i,j)].SetFillStyle(0)
+                    self.textBoxes[(i,j)].SetBorderSize(0)
+                    self.textBoxes[(i,j)].SetTextAlign(12)
+                    self.textBoxes[(i,j)].SetTextFont(42)
+                    self.textBoxes[(i,j)].SetTextSize(0.04)
+                    self.textBoxes[(i,j)].AddText(f"#mu = {self.fitResults[(i,j)].fitMu:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"#sigma = {self.fitResults[(i,j)].fitSigma:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"S = {self.fitResults[(i,j)].nSignal:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"S/B (3#sigma)= {self.fitResults[(i,j)].signalToBackground:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"S/#sqrt{{S+B}} = {self.fitResults[(i,j)].signalSignificance:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"#chi^{{2}}/ndf = {self.fitResults[(i,j)].fitChi2Ndf:.3f}")
+                    self.textBoxes[(i,j)].Draw()
+                self.slices[(i,j)].SetAxisRange(self.slices[(i,j)].GetBinContent(self.slices[(i,j)].GetNbinsX() - 1)*0.95,
+                                                self.slices[(i,j)].GetBinContent(1)*1.05,
+                                                'Y')
+        self.cGridInvM.Draw()
+        self.cGridInvM.Modified()
+        self.cGridInvM.Update()
+
+    def fit_inv_mass(self, indices, backgroundFunction, fitRange = [1.64, 2.08], doPrint=True,
+                     signalMuRange=None, signalSigmaRange=None,    
+                     backgroundInitialParams=None,
+                     simpleFitInitialParams=[100, 1.85, 0.015, 100, 0],
+                     simpleFitRange=[1.75, 1.98],
+                     shadowRange=[1.8, 1.9]):
+        # Create the results object to save info on this fit
+        fitResult = FitResult(fitRange[0], fitRange[1], backgroundFunction.__name__)
+        if doPrint:
+            print(f"====== Fitting bin {indices} ({self.slices[indices].GetTitle()}) ======")
+
+        backgroundNPar = fit_functions.background_npar[backgroundFunction.__name__]
+        if backgroundInitialParams is not None and len(backgroundInitialParams) != backgroundNPar:
+            print(f"WARNING: {len(backgroundInitialParams)} initial parameters for combinatorial background specified, but '{backgroundFunction.__name__}' takes {backgroundNPar} parameters!")
+        # Get the complete function to be used for the fit
+        fitFunc = fit_functions.make_fit_model(backgroundFunction, backgroundNPar, fitRange[0], fitRange[1])
+        fitFunc.SetName(f"fitFunc_bin_{indices[0]}_{indices[1]}")
+        # Fix the parameters of the reflected components
+        # TODO: These parameters should have some errors associated with them, coming from to the fit to MC
+        fitFunc.FixParameter(3, 0) # Ratio refl/S
+        fitFunc.FixParameter(4, 0) # Relative normalization of the two Gaussians
+        fitFunc.FixParameter(5, 0)
+        fitFunc.FixParameter(6, 1)
+        fitFunc.FixParameter(7, 0)
+        fitFunc.FixParameter(8, 1)
+        # Use a simple linear background to get initial parameters for the signal function
+        simpleFitFunc = r.TF1(f"simpleFitFunc_bin_{indices[0]}_{indices[1]}", fit_functions.simple_fit_model, 1.7, 2.03, npar=5, ndim=1)
+        simpleFitFunc.SetParameters(*simpleFitInitialParams)
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            simpleFitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # If specified, set range for the signal mean
+        if signalMuRange is not None:
+            simpleFitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
+        self.slices[indices].Fit(simpleFitFunc, "ME0" + ("Q" if not doPrint else ""), "", simpleFitRange[0], simpleFitRange[1])
+        fitFunc.SetParameter(0, simpleFitFunc.GetParameter(0)) # Signal yield
+        fitFunc.SetParameter(1, simpleFitFunc.GetParameter(1)) # Mean
+        fitFunc.SetParameter(2, simpleFitFunc.GetParameter(2)) # Sigma
+        # Set the background parameters to safe defaults (avoid division by 0)
+        for i in range(backgroundNPar):
+            fitFunc.SetParameter(3 + 6 + i, 1.0 if backgroundInitialParams is None else backgroundInitialParams[i])
+        if doPrint:
+            print("Initially, the combinatorial background function parameters are:")
+            for i in range(backgroundNPar):
+                print(f"par[{3 + 6 + i}] = {fitFunc.GetParameter(3 + 6 + i)}")
+        # Obtain a shadowed histogram with signal region removed, and do an initial fit to the background
+        sliceShadowed = self.slices[indices].Clone(f"invMassShadowed_bin_{indices[0]}_{indices[1]}")
+        for i in range(1, sliceShadowed.GetNbinsX() + 1):
+            binCenter = sliceShadowed.GetBinCenter(i)
+            if binCenter > shadowRange[0] and binCenter < shadowRange[1]:
+                sliceShadowed.SetBinContent(i, 0.0)
+                sliceShadowed.SetBinError(i, 0.0)
+        # Fix the signal yield, mean and sigma to the previously obtained values
+        fitFunc.FixParameter(0, simpleFitFunc.GetParameter(0)) # Signal yield
+        fitFunc.FixParameter(1, simpleFitFunc.GetParameter(1)) # Mean
+        fitFunc.FixParameter(2, simpleFitFunc.GetParameter(2)) # Sigma
+        sliceShadowed.Fit(fitFunc, "ME" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        if doPrint:
+            print("After fit to shadowed histogram, the combinatorial background function parameters are:")
+            for i in range(backgroundNPar):
+                print(f"par[{3 + 6 + i}] = {fitFunc.GetParameter(3 + 6 + i)}")
+        # The parameters for the combinatorial background should now have reasonable values. Now release the signal function parameters for the final fit
+        fitFunc.ReleaseParameter(0) # Signal yield
+        fitFunc.ReleaseParameter(1) # Mean
+        fitFunc.ReleaseParameter(2) # Sigma
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # If specified, set range for the signal mean
+        if signalMuRange is not None:
+            fitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
+        fitResult.result = self.slices[indices].Fit(fitFunc, "MES" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        # Store the functions for plotting and calculations
+        fitFuncParams = [fitFunc.GetParameters()[i] for i in range(fitFunc.GetNpar())]
+        fitFuncParErrors = [fitFunc.GetParErrors()[i] for i in range(fitFunc.GetNpar())]
+        nReflErr = utils.propagate_error_product(fitFuncParams[0], fitFuncParams[3], 
+                                                 fitFuncParErrors[0], fitFuncParErrors[3],
+                                                 fitResult.result.GetCovarianceMatrix()[0,3])
+        if doPrint:
+            print(f"fitFuncParams = {[str(par)+'+-'+str(err) for (par, err) in zip(fitFuncParams, fitFuncParErrors)]}")
+        signalFunc = r.TF1(f"signalFunc_bin{bin}", fit_functions.signal, self.massRange[0], self.massRange[1], 3)
+        signalFunc.SetParameters(np.array(fitFuncParams[0:3], dtype='d'))
+        signalFunc.SetParErrors(np.array(fitFuncParErrors[0:3], dtype='d'))
+        backgroundFunc = r.TF1(f"backgroundFunc_bin{bin}", backgroundFunction, self.massRange[0], self.massRange[1], backgroundNPar)
+        backgroundFunc.SetParameters(np.array(fitFuncParams[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetParErrors(np.array(fitFuncParErrors[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetLineColor(r.kBlue)
+        dataReflFunc = r.TF1(f"dataReflFunc_bin{bin}", fit_functions.reflected_background, self.massRange[0], self.massRange[1], 6)
+        dataReflFunc.SetParameters(np.concatenate(([fitFuncParams[0] * fitFuncParams[3]],
+                                                                    fitFuncParams[4:9]), dtype='d'))
+        dataReflFunc.SetParErrors(np.concatenate(([nReflErr], fitFuncParErrors[4:9]), dtype='d'))
+        dataReflFunc.SetLineColor(r.kGreen - 1)
+        dataReflFunc.SetLineStyle(r.kDashed)
+        totalBackgroundFunc = fit_functions.make_background_model(backgroundFunction, backgroundNPar, self.massRange[0], self.massRange[1])
+        totalBackgroundFunc.SetParameters(np.concatenate(([fitFuncParams[0] * fitFuncParams[3]],
+                                                                    fitFuncParams[4:]), dtype='d'))
+        totalBackgroundFunc.SetParErrors(np.concatenate(([nReflErr], fitFuncParErrors[4:]), dtype='d'))
+        totalBackgroundFunc.SetLineColor(r.kGreen)
+        totalBackgroundFunc.SetLineStyle(r.kDashed)
+        try:
+            fitResult.fitChi2Ndf = fitFunc.GetChisquare() / fitFunc.GetNDF()
+        except:
+            print("WARNING: Did not manage to calculate the chi2/ndf for the fit function!")
+            fitResult.fitChi2Ndf = 0
+        fitResult.fitMu = fitFunc.GetParameter('Mean')
+        fitResult.fitSigma = fitFunc.GetParameter('Sigma')
+        fitResult.nSignal = fitFunc.GetParameter(0) / self.slices[indices].GetBinWidth(1)
+        fitResult.nCombBackground = backgroundFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / self.slices[indices].GetBinWidth(1)
+        if doPrint:
+            print(f"bin {indices} nCombBackground = {fitResult.nCombBackground} was calculated by integration from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}")
+        fitResult.nReflBackground = dataReflFunc.GetParameter(0) / self.slices[indices].GetBinWidth(1)
+        fitResult.relativeStatError = fitFunc.GetParError(0) / (self.slices[indices].GetBinWidth(1) * fitResult.nSignal)
+        signalIntegral3Sigma = signalFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / self.slices[indices].GetBinWidth(1)
+        reflIntegral3Sigma = dataReflFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / self.slices[indices].GetBinWidth(1)
+        fitResult.signalToBackground = signalIntegral3Sigma / (fitResult.nCombBackground + reflIntegral3Sigma)
+        fitResult.signalSignificance = signalIntegral3Sigma / np.sqrt(signalIntegral3Sigma + fitResult.nCombBackground + reflIntegral3Sigma)
+        if doPrint:
+            print(f"bin {indices} signal significance and S/B were calculated by integrating the signal and background components from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}, yielding nSig={signalIntegral3Sigma}, nComb={fitResult.nCombBackground}, nReflBackground (3#sigma)={reflIntegral3Sigma}")
+        self.fitResults[indices] = fitResult
+
+
 class Efficiency():
     def __init__(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
         self.histNumerator = histNumerator
@@ -716,37 +1086,39 @@ class FactorizedEfficiency():
 class FitResult():
     "All information about the invariant mass fit to a pT bin"
 
-    def __init__(self, lowerMass, upperMass, isNominal=True):
+    def __init__(self, lowerMass, upperMass, backgroundName, isNominal=True):
         self.isNominal = isNominal
         self.lowerMass = lowerMass
         self.upperMass = upperMass
+        self.backgroundName = backgroundName
 
-    def create_fit_results(self, lowMass, highMass, bin, doPrint=True):
+    def create_fit_results(self, reflectedLowerMass, reflectedUpperMass, bin, 
+                           fitFunc, signalFunc, backgroundFunc, dataReflFunc, totalBackgroundFunc,
+                           doPrint=True):
         try:
-            self.fitChi2Ndf = self.fitFunc.GetChisquare() / self.fitFunc.GetNDF()
+            self.fitChi2Ndf = fitFunc.GetChisquare() / fitFunc.GetNDF()
         except:
+            print("WARNING: Did not manage to calculate the chi2/ndf for the fit function!")
             self.fitChi2Ndf = 0
-        try:
-            self.reflChi2Ndf = self.reflFunc.GetChisquare() / self.reflFunc.GetNDF()
-        except:
-            self.reflChi2Ndf = 0
-        self.fitMu = self.fitFunc.GetParameter('Mean')
-        self.fitSigma = self.fitFunc.GetParameter("Sigma")
-        self.nSignal = self.signalFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
-        if doPrint:
-            print(f"bin {bin.index} nSignal = {self.nSignal} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
-        self.nCombBackground = self.backgroundFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
+        self.fitMu = fitFunc.GetParameter('Mean')
+        self.fitSigma = fitFunc.GetParameter('Sigma')
+        self.nSignal = fitFunc.GetParameter(0) / bin.massPtSlice.GetBinWidth(1)
+        self.nCombBackground = backgroundFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
         if doPrint:
             print(f"bin {bin.index} nCombBackground = {self.nCombBackground} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
-        self.nReflBackground = self.dataReflFunc.Integral(lowMass, highMass) / bin.massPtSlice.GetBinWidth(1)
-        if (self.dataReflFunc.Eval(lowMass) > 1e-6):
-            print(f"WARNING: dataReflFunc({lowMass}) = {self.dataReflFunc.Eval(lowMass)}, normalization of reflected background may be inaccurate")
-        if (self.dataReflFunc.Eval(highMass) > 1e-6):
-            print(f"WARNING: dataReflFunc({highMass}) = {self.dataReflFunc.Eval(highMass)}, normalization of reflected background may be inaccurate")
+        self.nReflBackground = dataReflFunc.GetParameter(0) / bin.massPtSlice.GetBinWidth(1)
+        self.relativeStatError = fitFunc.GetParError(0) / (bin.massPtSlice.GetBinWidth(1) * self.nSignal)
+        signalIntegral3Sigma = signalFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
+        reflIntegral3Sigma = dataReflFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
+        self.signalToBackground = signalIntegral3Sigma / (self.nCombBackground + reflIntegral3Sigma)
+        self.signalSignificance = signalIntegral3Sigma / np.sqrt(signalIntegral3Sigma + self.nCombBackground + reflIntegral3Sigma)
         if doPrint:
-            print(f"bin {bin.index} nReflBackground = {self.nReflBackground} was calculated by integration from {lowMass} to {highMass}")
-        self.nBackground = self.nCombBackground + self.nReflBackground
-        self.relativeStatError = np.sqrt(self.nSignal + self.nBackground) / self.nSignal
+            print(f"bin {bin.index} signal significance and S/B were calculated by integrating the signal and background components from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}, yielding nSig={signalIntegral3Sigma}, nComb={self.nCombBackground}, nReflBackground (3#sigma)={reflIntegral3Sigma}")
+        self.fitFunc = fitFunc
+        self.signalFunc = signalFunc
+        self.backgroundFunc = backgroundFunc
+        self.dataReflFunc = dataReflFunc
+        self.totalBackgroundFunc = totalBackgroundFunc
 
 class PtBin():
     """A single pT bin of an analysis"""
@@ -758,35 +1130,18 @@ class PtBin():
         # Array to hold systematic fit variation results
         self.fitResults = []
 
-    def save_fit_result(self, fitResult):
-        self.nominalFitResult = fitResult
-        self.nSignal = fitResult.nSignal
-        self.nCombBackground = fitResult.nCombBackground
-        self.nReflBackground = fitResult.nReflBackground
-        self.nBackground = fitResult.nBackground
-        self.fitMu = fitResult.fitMu
-        self.fitSigma = fitResult.fitSigma
-        self.fitChi2Ndf = fitResult.fitChi2Ndf
-        self.reflChi2Ndf = fitResult.reflChi2Ndf
-        self.relativeStatError = fitResult.relativeStatError
-        self.fitFunc = fitResult.fitFunc
-        self.backgroundFunc = fitResult.backgroundFunc
-        self.totalBackgroundFunc = fitResult.totalBackgroundFunc
-        self.backgroundName = fitResult.backgroundName
-        self.fitRange = [fitResult.lowerMass, fitResult.upperMass]
-
     def draw(self):
         if hasattr(self, 'canvas'):
             del self.canvas
         self.canvas = r.TCanvas(f"canvasPtBin{self.index}", f"canvasPtBin{self.index}")
         self.massPtSlice.Draw("E")
         self.massPtSlice.SetStats(0)
-        if hasattr(self, 'fitFunc'):
-            self.fitFunc.Draw("same")
-            self.backgroundFunc.Draw("same")
-            self.totalBackgroundFunc.Draw("same")
+        if hasattr(self, 'nominalFitResult'):
+            self.nominalFitResult.fitFunc.Draw("same")
+            self.nominalFitResult.backgroundFunc.Draw("same")
+            self.nominalFitResult.totalBackgroundFunc.Draw("same")
             # Text box with info
-            self.backgroundText = r.TPaveText(0.15, 0.80, 0.50, 0.85, "NDC")
+            self.backgroundText = r.TPaveText(0.15, 0.15, 0.50, 0.20, "NDC")
             self.backgroundText.SetName(f"backgroundText_pTbin{self.index}")
             self.backgroundText.SetFillColor(0)
             self.backgroundText.SetFillStyle(0)
@@ -794,7 +1149,7 @@ class PtBin():
             self.backgroundText.SetTextAlign(12)
             self.backgroundText.SetTextFont(42)
             self.backgroundText.SetTextSize(0.04)
-            self.backgroundText.AddText(self.backgroundName)
+            self.backgroundText.AddText(self.nominalFitResult.backgroundName)
             self.backgroundText.Draw()
             self.textBox = r.TPaveText(0.65, 0.5, 0.95, 0.85, "NDC")
             self.textBox.SetName(f"textbox_pTbin{self.index}")
@@ -804,21 +1159,21 @@ class PtBin():
             self.textBox.SetTextAlign(12)
             self.textBox.SetTextFont(42)
             self.textBox.SetTextSize(0.04)
-            self.textBox.AddText(f"#mu = {self.fitMu:.3f}")
-            self.textBox.AddText(f"#sigma = {self.fitSigma:.3f}")
-            self.textBox.AddText(f"S = {self.nSignal:.3f}")
-            self.textBox.AddText(f"B = {self.nBackground:.3f}")
-            self.textBox.AddText(f"S/#sqrt{{S+B}} = {self.nSignal/(np.sqrt(self.nSignal + self.nBackground)):.3f}")
-            self.textBox.AddText(f"Refl/S = {self.nReflBackground/self.nSignal:.3f}")
-            self.textBox.AddText(f"#chi^{{2}}/ndf = {self.fitChi2Ndf:.3f}")
+            self.textBox.AddText(f"#mu = {self.nominalFitResult.fitMu:.3f}")
+            self.textBox.AddText(f"#sigma = {self.nominalFitResult.fitSigma:.3f}")
+            self.textBox.AddText(f"S = {self.nominalFitResult.nSignal:.3f}")
+            self.textBox.AddText(f"S/B (3#sigma)= {self.nominalFitResult.signalToBackground:.3f}")
+            self.textBox.AddText(f"S/#sqrt{{S+B}} = {self.nominalFitResult.signalSignificance:.3f}")
+            self.textBox.AddText(f"Refl/S = {self.nominalFitResult.nReflBackground/self.nominalFitResult.nSignal:.3f}")
+            self.textBox.AddText(f"#chi^{{2}}/ndf = {self.nominalFitResult.fitChi2Ndf:.3f}")
             self.textBox.Draw()
             # Lines to show fitting range
-            self.lineFitrangeLow = r.TLine(self.fitRange[0], r.gPad.GetUymin(), self.fitRange[0], r.gPad.GetUymax())
+            self.lineFitrangeLow = r.TLine(self.nominalFitResult.lowerMass, r.gPad.GetUymin(), self.nominalFitResult.lowerMass, r.gPad.GetUymax())
             self.lineFitrangeLow.SetLineColor(r.kBlack)
             self.lineFitrangeLow.SetLineStyle(2)
             self.lineFitrangeLow.SetLineWidth(1)
             self.lineFitrangeLow.Draw()
-            self.lineFitrangeHigh = r.TLine(self.fitRange[1], r.gPad.GetUymin(), self.fitRange[1], r.gPad.GetUymax())
+            self.lineFitrangeHigh = r.TLine(self.nominalFitResult.upperMass, r.gPad.GetUymin(), self.nominalFitResult.upperMass, r.gPad.GetUymax())
             self.lineFitrangeHigh.SetLineColor(r.kBlack)
             self.lineFitrangeHigh.SetLineStyle(2)
             self.lineFitrangeHigh.SetLineWidth(1)
@@ -828,24 +1183,28 @@ class PtBin():
 class Analysis():
     """Class containing everything needed to calculate a D0 cross section from O2Physics output"""
 
-    DEFAULT_RUNLIST = ['545367', '545345', '545332', '545312', '545311', '545296', '545294', '545291', '545289', '545262', '545249', '545246', '545223', '545222', '545210', '545185', '545184', '545171', '545117', '545103', '545086', '545064', '545063', '545062', '545060', '545047', '545044', '545042', '545041', '545009', '545008', '545004', '544992', '544991', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013']
-    class FileStructures(Enum):
-        RUNDIRS = auto()
-        FLAT = auto()
-
-    def __init__(self, pathTableMaker, dirData, dirRec, dirGen, ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, **kwargs):
+    def __init__(self, pathTableMaker, dirData, dirRec, dirGen, dirRefl = None,
+                 ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, 
+                 hLumiPath=['eventselection-run3', 'luminosity', 'hLumiTCEafterBCcuts'], 
+                 dataFileStructure=FileStructures.FLAT,
+                 recFileStructure=FileStructures.FLAT,
+                 genFileStructure=FileStructures.FLAT,
+                 rapidityGapSelectionEfficiency = None,
+                 **kwargs):
         # The runList defines which files are looped over in run-by-run calculations
-        self.runList = runList if runList is not None else Analysis.DEFAULT_RUNLIST
+        self.runList = runList if runList is not None else DEFAULT_RUNLIST.copy()
         self.runList = sorted(self.runList)
         print(f"This analysis contains {len(self.runList)} runs")
 
         # Import table-maker merged output file and check that it contains the correct runs
         self.fileTableMaker = r.TFile.Open(pathTableMaker)
-        self.check_file_for_runs(self.fileTableMaker, ['bc-selection-task', 'hCounterTCE'])
+        self.hLumiPath = hLumiPath
+        self.check_file_for_runs(self.fileTableMaker, self.hLumiPath)
 
         self.dirData = dirData
         self.dirRec = dirRec
         self.dirGen = dirGen
+        self.dirRefl = dirRefl
 
         # Get default cut names, replace if specified in construction
         cutNames = {
@@ -866,21 +1225,58 @@ class Analysis():
         self.minY = -0.9
         self.maxY = 0.9
         # Get the mass histograms needed for the signal extraction
+        self.dataFileStructure = dataFileStructure
+        self.recFileStructure = recFileStructure
+        self.genFileStructure = genFileStructure
         self.prepare_histograms()
-        # Get the integrated luminosity from the bc-selection-task
-        self.lumi = self.histLumi.Integral() # 1/µb
+        # Get the integrated luminosity from the luminosity task
+        self.calculate_lumi() # 1/µb
         print(f"Integrated luminosity (TCE trigger, after BC cuts): {self.lumi} 1/µb")
         self.runByRunLumi = {}
         for run in self.runList:
            self.runByRunLumi[run] = self.histLumi.GetBinContent(self.histLumi.GetXaxis().FindBin(run)) 
+        self.runByRunLumiTotal = sum(self.runByRunLumi.values())
+        if self.runByRunLumiTotal < self.lumi:
+            print(f"WARNING: Lumi calculated as sum over runlist is not equal to the integral of lumi histogram! Setting lumi for this analysis to {self.runByRunLumiTotal} 1/µb")
+            self.lumi = self.runByRunLumiTotal
         # Set the range of the mass axis for plotting and integrating reflected background
         self.massRange = [0., 4.]
         self.reweighting = False
+        # Manually set the efficiency due to rapidity gap selection
+        self.rapidityGapSelectionEfficiency = rapidityGapSelectionEfficiency
+        if self.rapidityGapSelectionEfficiency is not None:
+            print("INFO: Efficiency due to rapidity gap event selection was provided manually. Make sure the MC files do NOT contain a rapidity gap selection!")
+
+    def calculate_lumi(self):
+        self.lumi = 0
+        ax = self.histLumi.GetXaxis()
+        for i in range(1, self.histLumi.GetNbinsX() + 1):
+            if ax.GetBinLabel(i) in self.runList:
+                self.lumi += self.histLumi.GetBinContent(i)
+
+    def correct_lumi(self, dir):
+        for irun, run in enumerate(self.runList):
+            print(f"Checking run {run} ({irun+1}/{len(self.runList)})...            ", end='\r')
+            pathTableMaker = f"{dir}/{run}/mergedAnalysisResults.root"
+            histTableMaker = get_histograms_from_file(pathTableMaker, ["table-maker/output;1/Event_AfterCuts/VtxZ"])["table-maker/output;1/Event_AfterCuts/VtxZ"]
+            nEventsTableMaker = histTableMaker.GetEntries()
+            pathTableReader = f"{self.dirData}/{run}/AnalysisResults.root"
+            histTableReader = get_histograms_from_file(pathTableReader, ["analysis-event-selection/output;1/Event_BeforeCuts/VtxZ"])["analysis-event-selection/output;1/Event_BeforeCuts/VtxZ"]
+            nEventsTableReader = histTableReader.GetEntries()
+            correctionFactor = nEventsTableReader / nEventsTableMaker
+            del histTableReader
+            del histTableMaker
+            if correctionFactor != 1:
+                lumiThisRun = self.histLumi.GetBinContent(self.histLumi.GetXaxis().FindBin(run))
+                lumiReduction = lumiThisRun * (1 - correctionFactor)
+                print(f"\nRun {run} ({lumiThisRun:.2f} 1/µb): Only {100 * correctionFactor:.3f}% of events included. Reducing the analysis luminosity by {lumiReduction:.3f} 1/µb")
+                self.lumi -= lumiReduction
+        print(f"Done! New lumi = {self.lumi:.2f} 1/µb")
 
     def check_file_for_runs(self, file, strings):
         if len(strings) == 3:
             group, subGroup, histName = strings
-            hist = file.Get(group).FindObject(subGroup).FindObject(histName)
+            hist = file.Get(group).Get(subGroup).Get(histName)
         elif len(strings) == 2:
             group, histName = strings
             hist = file.Get(group).Get(histName)
@@ -891,23 +1287,28 @@ class Analysis():
         labels = [label for label in labels if label]
         if sorted(labels) != sorted(self.runList):
             uniqueRuns = set(self.runList) - set(labels)
-            uniqueLabels = set(self.runList) - set(labels)
+            uniqueLabels = set(labels) - set(self.runList)
             print(f"Items unique to the runList: {uniqueRuns}")
             print(f"Items unique to the file: {uniqueLabels}")
-            raise Exception(f"File '{file.GetName()}' does not contain the correct set of runs!")
+            if set(self.runList) <= set(labels):
+                print(f"WARNING: File '{file.GetName()}' contains a superset of the runs in the runlist! Remember to correct the luminosity!")
+            else:
+                raise Exception(f"File '{file.GetName()}' does not contain the correct set of runs!")
 
     def prepare_histograms(self):
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
         self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
 
-        self.histLumi = self.fileTableMaker.Get("bc-selection-task").Get("hLumiTCEafterBCcuts")
+        self.histLumi = self.fileTableMaker.Get(self.hLumiPath[0]).Get(self.hLumiPath[1])
+        if len(self.hLumiPath) == 3:
+            self.histLumi = self.histLumi.Get(self.hLumiPath[2])
 
         # Obtain the main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
         fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
         fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
         fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
         fullNamesGen.append(fullNameHistD0PtYGenerated)
-        self.dictGenHists = self.get_histograms(self.dirGen, fullNamesGen)
+        self.dictGenHists = get_histograms(self.dirGen, self.runList, fullNamesGen, histogramNamesfileStructure=self.genFileStructure)
         self.histD0PtYGenerated = self.dictGenHists[fullNameHistD0PtYGenerated]
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
@@ -916,9 +1317,17 @@ class Analysis():
         self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY} < y < {self.maxY}")
         # Data histograms
         fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtHisto"
+        fullNameHistD0MassPtIsGap = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtIsGapHisto"
+        fullNameHistMultiDimA = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapAHisto"
+        fullNameHistMultiDimC = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapCHisto"
         fullNameHistEventAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxZ"
-        tmpDict = self.get_histograms(self.dirData, [fullNameHistD0MassPt, fullNameHistEventAfterCuts])
-        self.histD0MassPt = tmpDict[fullNameHistD0MassPt]
+        tmpDict = get_histograms(self.dirData, self.runList, [fullNameHistD0MassPt, fullNameHistD0MassPtIsGap, fullNameHistEventAfterCuts, fullNameHistMultiDimA, fullNameHistMultiDimC], histogramNamesfileStructure=self.dataFileStructure)
+        try:
+            self.histD0MassPt = tmpDict[fullNameHistD0MassPt]
+        except:
+            hist3d = tmpDict[fullNameHistD0MassPtIsGap]
+            self.histD0MassPt = hist3d.Project3D('yx')
+            del hist3d
         self.histEventAfterCuts = tmpDict[fullNameHistEventAfterCuts]
         self.nEvents = self.histEventAfterCuts.GetEntries()
         del tmpDict
@@ -928,21 +1337,35 @@ class Analysis():
         fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
         fullNamesRec.append(fullNameHistD0PtMatched)
         fullNameHistD0MassPtReflected = "analysis-asymmetric-pairing/output;1/" + f"{self.groupNameD0PtMatched}Reflected" + "/MyMassPtHisto"
-        fullNamesRec.append(fullNameHistD0MassPtReflected)
-        for name in fullNamesRec:
-            print(name)
-        self.dictRecHists = self.get_histograms(self.dirRec, fullNamesRec)
+        if self.dirRefl is None:
+            # Get the reflected histogram (and the reference not reflected histogram) from the same file as we use for matched histograms for efficiencies
+            fullNamesRec.append(fullNameHistD0MassPtReflected)
+            self.dictRecHists = get_histograms(self.dirRec, self.runList, fullNamesRec, histogramNamesfileStructure=self.recFileStructure)
+            self.histD0MassPtReflected = self.dictRecHists[fullNameHistD0MassPtReflected]
+            self.histD0PtNotReflected = self.dictRecHists[fullNameHistD0PtMatched]
+        else:
+            # Get the reflected histogram (and the reference not reflected histogram) from a separate file
+            self.dictRecHists = get_histograms(self.dirRec, self.runList, fullNamesRec, histogramNamesfileStructure=self.recFileStructure)
+            print("INFO: Separate directory for MC files with reflected histogram was specified")
+            dictReflHist = get_histograms(self.dirRefl, self.runList, [fullNameHistD0MassPtReflected, fullNameHistD0PtMatched], histogramNamesfileStructure=self.recFileStructure)
+            self.histD0MassPtReflected = dictReflHist[fullNameHistD0MassPtReflected]
+            self.histD0PtNotReflected = dictReflHist[fullNameHistD0PtMatched]
         self.histD0PtMatched = self.dictRecHists[fullNameHistD0PtMatched]
         self.histD0PtMatched.SetName("histD0PtMatched")
         self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
-        self.histD0MassPtReflected = self.dictRecHists[fullNameHistD0MassPtReflected]
 
+        binWidth = 0.005
         for i, bin in enumerate(self.ptBins):
             # Create an array of slices of the mass vs pT histogram and the MC reflected mass vs pT histogram
             lowerBin = self.histD0MassPt.GetYaxis().FindBin(bin.lowerPt)
             upperBin = self.histD0MassPt.GetYaxis().FindBin(bin.upperPt) - 1
             hProjectionMass = self.histD0MassPt.ProjectionX(f"projMass_{bin.lowerPt}_{bin.upperPt}", firstybin=lowerBin, lastybin=upperBin)
-            hProjectionMass.Rebin(5)
+            currentBinWidth = hProjectionMass.GetBinWidth(1)
+            if binWidth % currentBinWidth == 0:
+                groupSize = int(binWidth / currentBinWidth)
+                hProjectionMass.Rebin(groupSize)
+            else:
+                print(f"WARNING: Impossible to rebin invariant mass histogram to the bin width {binWidth} GeV/c^2. Keeping the current bin width of {currentBinWidth} GeV/c^2.")
             hProjectionMass.SetTitle(f"Kpi invariant mass, {bin.lowerPt} <= pT < {bin.upperPt} GeV/c")
             bin.massPtSlice = hProjectionMass
 
@@ -955,118 +1378,45 @@ class Analysis():
             matchedLowerBin = self.histD0PtMatched.GetXaxis().FindBin(bin.lowerPt)
             matchedUpperBin = self.histD0PtMatched.GetXaxis().FindBin(bin.upperPt) - 1
             bin.nMatched = self.histD0PtMatched.Integral(matchedLowerBin, matchedUpperBin)
+            bin.nNotReflected = self.histD0PtNotReflected.Integral(matchedLowerBin, matchedUpperBin)
 
-    def get_histograms(self, directory, fullHistogramNames, histogramNamesfileStructure = None):
-        if histogramNamesfileStructure is None:
-            histogramNamesfileStructure = self.FileStructures.FLAT
-        splitHistNames = [s.split("/") for s in fullHistogramNames] 
-        namesDict = {}
-        for irow, row in enumerate(splitHistNames):
-            depth = len(row)
-            if row[1] == 'output;1':
-                depth -= 1
-                row[0] += ('/' + row[1])
-                row = np.delete(row, 1)
-            if depth == 3:
-                if row[0] not in namesDict:
-                    namesDict[row[0]] = {row[1] : []}
-                elif row[1] not in namesDict[row[0]]:
-                        namesDict[row[0]][row[1]] = []
-                namesDict[row[0]][row[1]].append(row[2])
-            elif depth == 2: # e. g. the lumi histogram
-                if row[0] not in namesDict:
-                    namesDict[row[0]] = []
-                namesDict[row[0]].append(row[1])
-
-            else:
-                raise Exception(f"Histogram name with depth = {depth}, don't know what to do!")
-
-        histograms = {}
-        print(f"Getting histograms from {directory}...")
-        if depth == 3:
-            for irun, run in enumerate(self.runList):
-                print(f"Processing run {run} ({irun+1}/{len(self.runList)})...            ", end='\r')
-                if (histogramNamesfileStructure == self.FileStructures.FLAT):
-                    filePath = f"{directory}/AnalysisResults_run{run}.root"
-                elif (histogramNamesfileStructure == self.FileStructures.RUNDIRS):
-                    filePath = f"{directory}/{run}/AnalysisResults.root"
-                else:
-                    raise Exception("Not a valid FileStructure!")
-                with uproot.open(filePath) as file:
-                    for dirName in namesDict.keys():
-                        try:
-                            dir = file[dirName]
-                        except:
-                            raise Exception(f"Couldn't get '{dirName}' from file '{filePath}'!")
-                        for i, item in enumerate(dir):
-                            if item.member("fName") in namesDict[dirName]:
-                                for ii, iitem in enumerate(dir[i]):
-                                    if iitem.member("fName") in namesDict[dirName][item.member("fName")]:
-                                        fullName = dirName + '/' + item.member("fName") + '/' + iitem.member("fName")
-                                        tmpHist = dir[i][ii]
-                                        tmpHistWritable = tmpHist.to_writable()
-                                        tmpHistPr = tmpHistWritable.to_pyroot()
-                                        if fullName not in histograms:
-                                            histograms[fullName] = tmpHistPr
-                                        else:
-                                            histograms[fullName].Add(tmpHistPr)
-        elif depth == 2:
-            for irun, run in enumerate(self.runList):
-                print(f"Processing run {run} ({irun+1}/{len(self.runList)})...            ", end='\r')
-                if (histogramNamesfileStructure == self.FileStructures.FLAT):
-                    filePath = f"{directory}/AnalysisResults_run{run}.root"
-                elif (histogramNamesfileStructure == self.FileStructures.RUNDIRS):
-                    filePath = f"{directory}/{run}/AnalysisResults.root"
-                else:
-                    raise Exception("Not a valid FileStructure!")
-                with uproot.open(filePath) as file:
-                    for dirName in namesDict.keys():
-                        dir = file[dirName]
-                        for i, item in enumerate(dir):
-                            if item.member("fName") in namesDict[dirName]:
-                                fullName = dirName + '/' + item.member("fName")
-                                tmpHist = dir[i]
-                                tmpHistWritable = tmpHist.to_writable()
-                                tmpHistPr = tmpHistWritable.to_pyroot()
-                                if fullName not in histograms:
-                                    histograms[fullName] = tmpHistPr
-                                else:
-                                    histograms[fullName].Add(tmpHistPr)
-
-        print("\nDone!")
-        return histograms
-
+    """
     def systematic_fit_variation(self, bin, backgroundName, lowers, uppers):
         for lower in lowers:
             for upper in uppers:
                 self.fit_inv_mass(bin, backgroundName, fitRange=[lower, upper], doPrint=False, isNominal=False)
                 print(f"Fit range [{lower}, {upper}]: S = {self.ptBins[bin].fitResults[-1].nSignal}, B = {self.ptBins[bin].fitResults[-1].nBackground}")
+    """
 
     def fit_reflected(self, bin, doPrint=True):
         # Fit the reflected MC histogram with a double Gaussian
-        reflFunc = r.TF1(f"fDoubleGauss_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2) + [3]*exp(-0.5*((x-[4])/[5])^2)", self.massRange[0], self.massRange[1])
-        reflFunc.SetParameters(1, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2, 1, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2)
-        reflFunc.SetParNames("Amp1", "Mean1", "Sigma1", "Amp2", "Mean2", "Sigma2")
-        # Require the amplitudes to be positive
+        reflFunc = r.TF1(f"fDoubleGauss_bin{bin}", fit_functions.reflected_background, self.massRange[0], self.massRange[1], 6)
+        reflFunc.SetParameters(1, 0.5, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2)
+        reflFunc.SetParNames("Integral", "RelNorm", "Mean1", "Sigma1", "Mean2", "Sigma2")
+        # Require the integral to be positive
         reflFunc.SetParLimits(0, 0, 1e6)
-        reflFunc.SetParLimits(3, 0, 1e6)
+        # Require the relative normalization to be a number between 0 and 1
+        reflFunc.SetParLimits(1, 0, 1)
         # Require reasonable peak positions and widths for the Gaussians
-        reflFunc.SetParLimits(1, self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmin(), self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmax())
+        reflFunc.SetParLimits(2, self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmin(), self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmax())
         reflFunc.SetParLimits(4, self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmin(), self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmax())
-        reflFunc.SetParLimits(2, 0, 0.2)
+        reflFunc.SetParLimits(3, 0, 0.2)
         reflFunc.SetParLimits(5, 0, 0.2)
         if doPrint:
             print("---- Fitting MC matched, reflected ----")
         self.ptBins[bin].massPtSliceReflected.Fit(reflFunc, "LR0" + ("Q" if not doPrint else ""))
         self.ptBins[bin].reflFunc = reflFunc
 
-        self.ptBins[bin].reflectedRatio = self.ptBins[bin].massPtSliceReflected.GetEntries() / self.ptBins[bin].nMatched
+        self.ptBins[bin].reflectedRatio = self.ptBins[bin].massPtSliceReflected.GetEntries() / self.ptBins[bin].nNotReflected
 
-
-    def fit_inv_mass(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = [], doPrint=True, isNominal=True):
+    def fit_inv_mass(self, bin, backgroundFunction, fitRange = [1.64, 2.08], doPrint=True, isNominal=True, 
+                     signalMuRange=None, signalSigmaRange=None,    
+                     backgroundInitialParams=None,
+                     simpleFitInitialParams=[100, 1.85, 0.015, 100, 0],
+                     simpleFitRange=[1.75, 1.98],
+                     shadowRange=[1.8, 1.9]):
         # Create the results object to save info on this fit
-        fitResult = FitResult(fitRange[0], fitRange[1])
-        fitResult.backgroundName = backgroundName
+        fitResult = FitResult(fitRange[0], fitRange[1], backgroundFunction.__name__)
         if doPrint:
             print(f"====== Fitting bin {bin} ({self.ptBins[bin].lowerPt} < pT < {self.ptBins[bin].upperPt} GeV/c) ======")
 
@@ -1074,6 +1424,117 @@ class Analysis():
         if not hasattr(self.ptBins[bin], 'reflectedRatio'):
             self.fit_reflected(bin, doPrint)
         reflFunc = self.ptBins[bin].reflFunc
+        print(f"Using reflectedRatio={self.ptBins[bin].reflectedRatio} in fit")
+
+        backgroundNPar = fit_functions.background_npar[backgroundFunction.__name__]
+        if backgroundInitialParams is not None and len(backgroundInitialParams) != backgroundNPar:
+            print(f"WARNING: {len(backgroundInitialParams)} initial parameters for combinatorial background specified, but '{backgroundFunction.__name__}' takes {backgroundNPar} parameters!")
+        # Get the complete function to be used for the fit
+        fitFunc = fit_functions.make_fit_model(backgroundFunction, backgroundNPar, fitRange[0], fitRange[1])
+        fitFunc.SetName(f"fitFunc_bin{bin}")
+        # Fix the parameters of the reflected components
+        # TODO: These parameters should have some errors associated with them, coming from to the fit to MC
+        fitFunc.FixParameter(3, self.ptBins[bin].reflectedRatio) # Ratio refl/S
+        fitFunc.FixParameter(4, reflFunc.GetParameter("RelNorm")) # Relative normalization of the two Gaussians
+        fitFunc.FixParameter(5, reflFunc.GetParameter("Mean1"))
+        fitFunc.FixParameter(6, reflFunc.GetParameter("Sigma1"))
+        fitFunc.FixParameter(7, reflFunc.GetParameter("Mean2"))
+        fitFunc.FixParameter(8, reflFunc.GetParameter("Sigma2"))
+        # Use a simple linear background to get initial parameters for the signal function
+        simpleFitFunc = r.TF1(f"simpleFitFunc_bin{bin}", fit_functions.simple_fit_model, 1.7, 2.03, npar=5, ndim=1)
+        simpleFitFunc.SetParameters(*simpleFitInitialParams)
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            simpleFitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # If specified, set range for the signal mean
+        if signalMuRange is not None:
+            simpleFitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
+        self.ptBins[bin].massPtSlice.Fit(simpleFitFunc, "ME0" + ("Q" if not doPrint else ""), "", simpleFitRange[0], simpleFitRange[1])
+        fitFunc.SetParameter(0, simpleFitFunc.GetParameter(0)) # Signal yield
+        fitFunc.SetParameter(1, simpleFitFunc.GetParameter(1)) # Mean
+        fitFunc.SetParameter(2, simpleFitFunc.GetParameter(2)) # Sigma
+        # Set the background parameters to safe defaults (avoid division by 0)
+        for i in range(backgroundNPar):
+            fitFunc.SetParameter(3 + 6 + i, 1.0 if backgroundInitialParams is None else backgroundInitialParams[i])
+        if doPrint:
+            print("Initially, the combinatorial background function parameters are:")
+            for i in range(backgroundNPar):
+                print(f"par[{3 + 6 + i}] = {fitFunc.GetParameter(3 + 6 + i)}")
+        # Obtain a shadowed histogram with signal region removed, and do an initial fit to the background
+        self.ptBins[bin].massPtSliceShadowed = self.ptBins[bin].massPtSlice.Clone(f"invMassShadowed_bin{bin}")
+        for i in range(1, self.ptBins[bin].massPtSliceShadowed.GetNbinsX() + 1):
+            binCenter = self.ptBins[bin].massPtSliceShadowed.GetBinCenter(i)
+            if binCenter > shadowRange[0] and binCenter < shadowRange[1]:
+                self.ptBins[bin].massPtSliceShadowed.SetBinContent(i, 0.0)
+                self.ptBins[bin].massPtSliceShadowed.SetBinError(i, 0.0)
+        # Fix the signal yield, mean and sigma to the previously obtained values
+        fitFunc.FixParameter(0, simpleFitFunc.GetParameter(0)) # Signal yield
+        fitFunc.FixParameter(1, simpleFitFunc.GetParameter(1)) # Mean
+        fitFunc.FixParameter(2, simpleFitFunc.GetParameter(2)) # Sigma
+        self.ptBins[bin].massPtSliceShadowed.Fit(fitFunc, "ME" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        if doPrint:
+            print("After fit to shadowed histogram, the combinatorial background function parameters are:")
+            for i in range(backgroundNPar):
+                print(f"par[{3 + 6 + i}] = {fitFunc.GetParameter(3 + 6 + i)}")
+        # The parameters for the combinatorial background should now have reasonable values. Now release the signal function parameters for the final fit
+        fitFunc.ReleaseParameter(0) # Signal yield
+        fitFunc.ReleaseParameter(1) # Mean
+        fitFunc.ReleaseParameter(2) # Sigma
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # If specified, set range for the signal mean
+        if signalMuRange is not None:
+            fitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
+        fitResult.result = self.ptBins[bin].massPtSlice.Fit(fitFunc, "MES" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        # Store the functions for plotting and calculations
+        fitFuncParams = [fitFunc.GetParameters()[i] for i in range(fitFunc.GetNpar())]
+        fitFuncParErrors = [fitFunc.GetParErrors()[i] for i in range(fitFunc.GetNpar())]
+        nReflErr = utils.propagate_error_product(fitFuncParams[0], fitFuncParams[3], 
+                                                 fitFuncParErrors[0], fitFuncParErrors[3],
+                                                 fitResult.result.GetCovarianceMatrix()[0,3])
+        if doPrint:
+            print(f"fitFuncParams = {[str(par)+'+-'+str(err) for (par, err) in zip(fitFuncParams, fitFuncParErrors)]}")
+        signalFunc = r.TF1(f"signalFunc_bin{bin}", fit_functions.signal, self.massRange[0], self.massRange[1], 3)
+        signalFunc.SetParameters(np.array(fitFuncParams[0:3], dtype='d'))
+        signalFunc.SetParErrors(np.array(fitFuncParErrors[0:3], dtype='d'))
+        backgroundFunc = r.TF1(f"backgroundFunc_bin{bin}", backgroundFunction, self.massRange[0], self.massRange[1], backgroundNPar)
+        backgroundFunc.SetParameters(np.array(fitFuncParams[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetParErrors(np.array(fitFuncParErrors[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetLineColor(r.kBlue)
+        dataReflFunc = r.TF1(f"dataReflFunc_bin{bin}", fit_functions.reflected_background, self.massRange[0], self.massRange[1], 6)
+        dataReflFunc.SetParameters(np.concatenate(([fitFuncParams[0] * fitFuncParams[3]],
+                                                                    fitFuncParams[4:9]), dtype='d'))
+        dataReflFunc.SetParErrors(np.concatenate(([nReflErr], fitFuncParErrors[4:9]), dtype='d'))
+        dataReflFunc.SetLineColor(r.kGreen - 1)
+        dataReflFunc.SetLineStyle(r.kDashed)
+        totalBackgroundFunc = fit_functions.make_background_model(backgroundFunction, backgroundNPar, self.massRange[0], self.massRange[1])
+        totalBackgroundFunc.SetParameters(np.concatenate(([fitFuncParams[0] * fitFuncParams[3]],
+                                                                    fitFuncParams[4:]), dtype='d'))
+        totalBackgroundFunc.SetParErrors(np.concatenate(([nReflErr], fitFuncParErrors[4:]), dtype='d'))
+        totalBackgroundFunc.SetLineColor(r.kGreen)
+        totalBackgroundFunc.SetLineStyle(r.kDashed)
+        fitResult.create_fit_results(self.massRange[0], self.massRange[1], self.ptBins[bin],
+                                     fitFunc, signalFunc, backgroundFunc, dataReflFunc, totalBackgroundFunc,
+                                     doPrint=doPrint)
+        # If this fit result is supposed to be the nominal one, save it to the pT bin as such
+        if isNominal:
+            self.ptBins[bin].nominalFitResult = fitResult
+        else:
+            self.ptBins[bin].fitResults.append(fitResult)
+
+    @deprecated(reason="Use fit_inv_mass instead!")
+    def fit_inv_mass_old(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = [], doPrint=True, isNominal=True):
+        # Create the results object to save info on this fit
+        fitResult = FitResult(fitRange[0], fitRange[1], backgroundName)
+        if doPrint:
+            print(f"====== Fitting bin {bin} ({self.ptBins[bin].lowerPt} < pT < {self.ptBins[bin].upperPt} GeV/c) ======")
+
+        # Do the fit to the MC reflected background if needed
+        if not hasattr(self.ptBins[bin], 'reflectedRatio'):
+            self.fit_reflected(bin, doPrint)
+        reflFunc = self.ptBins[bin].reflFunc
+        print(f"Using reflectedRatio={self.ptBins[bin].reflectedRatio} in fit")
 
         # Set up fitting function
         if backgroundName == "pol2":
@@ -1200,21 +1661,37 @@ class Analysis():
         dataReflFunc.SetLineColor(r.kGreen - 1)
         dataReflFunc.SetLineStyle(r.kDashed)
 
-        fitResult.fitFunc = fitFunc
-        fitResult.signalFunc = signalFunc
-        fitResult.backgroundFunc = backgroundFunc
-        fitResult.dataReflFunc = dataReflFunc
-        fitResult.totalBackgroundFunc = r.TF1(f"totalBackgroundFunc_bin{bin}",
-                                                     str(fitResult.backgroundFunc.GetExpFormula("p")) + "+" + str(fitResult.dataReflFunc.GetExpFormula("p")),
+        totalBackgroundFunc = r.TF1(f"totalBackgroundFunc_bin{bin}",
+                                                     str(backgroundFunc.GetExpFormula("p")) + "+" + str(dataReflFunc.GetExpFormula("p")),
                                                      self.massRange[0],
                                                      self.massRange[1])
-        fitResult.totalBackgroundFunc.SetLineColor(r.kGreen)
-        fitResult.totalBackgroundFunc.SetLineStyle(r.kDashed)
-        fitResult.create_fit_results(self.massRange[0], self.massRange[1], self.ptBins[bin], doPrint=doPrint)
+        totalBackgroundFunc.SetLineColor(r.kGreen)
+        totalBackgroundFunc.SetLineStyle(r.kDashed)
+        fitResult.create_fit_results(self.massRange[0], self.massRange[1], self.ptBins[bin],
+                                     fitFunc, signalFunc, backgroundFunc, dataReflFunc, totalBackgroundFunc,
+                                     doPrint=doPrint)
+
+        # Legacy code to calculate and overwrite signal and background counts
+        fitResult.nSignal = signalFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / self.ptBins[bin].massPtSlice.GetBinWidth(1)
+        if doPrint:
+            print(f"bin {self.ptBins[bin].index} nSignal = {fitResult.nSignal} was calculated by integration from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}")
+        fitResult.nCombBackground = backgroundFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / self.ptBins[bin].massPtSlice.GetBinWidth(1)
+        if doPrint:
+            print(f"bin {self.ptBins[bin].index} nCombBackground = {fitResult.nCombBackground} was calculated by integration from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}")
+        fitResult.nReflBackground = dataReflFunc.Integral(self.massRange[0], self.massRange[1]) / self.ptBins[bin].massPtSlice.GetBinWidth(1)
+        if (dataReflFunc.Eval(self.massRange[0]) > 1e-6):
+            print(f"WARNING: dataReflFunc({self.massRange[0]}) = {dataReflFunc.Eval(self.massRange[0])}, normalization of reflected background may be inaccurate")
+        if (dataReflFunc.Eval(self.massRange[1]) > 1e-6):
+            print(f"WARNING: dataReflFunc({self.massRange[1]}) = {dataReflFunc.Eval(self.massRange[1])}, normalization of reflected background may be inaccurate")
+        if doPrint:
+            print(f"bin {self.ptBins[bin].index} nReflBackground = {fitResult.nReflBackground} was calculated by integration from {self.massRange[0]} to {self.massRange[1]}")
+        fitResult.relativeStatError = np.sqrt(fitResult.nSignal + fitResult.nCombBackground + fitResult.nReflBackground) / fitResult.nSignal
+        fitResult.signalToBackground = fitResult.nSignal / (fitResult.nCombBackground + fitResult.nReflBackground)
+        fitResult.signalSignificance = fitResult.nSignal / np.sqrt(fitResult.nSignal + fitResult.nCombBackground + fitResult.nReflBackground)
 
         # If this fit result is supposed to be the nominal one, save it to the pT bin as such
         if isNominal:
-            self.ptBins[bin].save_fit_result(fitResult)
+            self.ptBins[bin].nominalFitResult = fitResult
         else:
             self.ptBins[bin].fitResults.append(fitResult)
 
@@ -1295,6 +1772,10 @@ class Analysis():
         print(f"Rec/Gen histogram was calculated using '{self.groupNameD0PtMatched}' and '{self.groupNameD0Generated}'")
         self.efficiencyFine.SetName("efficiencyFine")
         self.efficiencyFine.SetTitle("Reconstructed, matched D0 / Generated D0 after BC cuts")
+        if self.rapidityGapSelectionEfficiency is not None:
+            print(f"INFO: Multiplying 'efficiencyFine' by rapidityGapSelectionEfficiency={self.rapidityGapSelectionEfficiency}")
+            self.efficiencyFine.Scale(self.rapidityGapSelectionEfficiency)
+            self.efficiencyFine.SetTitle("(" + self.efficiencyFine.GetTitle() + ") #times #epsilon(rap. gap)")
         # Make sure the pT axis is (0, 12) GeV
         if (self.efficiencyFine.FindBin(self.ptBinsArray[-1]) <= self.efficiencyFine.GetNbinsX()):
             nFineBins = self.efficiencyFine.FindBin(self.ptBinsArray[-1])
@@ -1311,6 +1792,10 @@ class Analysis():
         self.efficiency.SetName("efficiency")
         self.efficiency.SetTitle("Reconstructed / Generated;p_{T};Ratio")
         self.efficiency.Divide(self.histD0PtGeneratedFinalBins)
+        if self.rapidityGapSelectionEfficiency is not None:
+            print(f"INFO: Multiplying 'efficiency' by rapidityGapSelectionEfficiency={self.rapidityGapSelectionEfficiency}")
+            self.efficiency.Scale(self.rapidityGapSelectionEfficiency)
+            self.efficiency.SetTitle("(" + self.efficiency.GetTitle() + ") #times #epsilon(rap. gap)")
 
     def calculate_corrected_spectrum(self):
         if hasattr(self, 'histCorrectedSpectrum'):
@@ -1337,7 +1822,7 @@ class Analysis():
         self.efficiencyReweighted = self.efficiency.Clone()
         self.efficiencyReweighted.Reset()
         self.efficiencyReweighted.SetName("efficiencyReweighted")
-        self.efficiencyReweighted.SetTitle("Reconstructed / Generated, reweighted")
+        self.efficiencyReweighted.SetTitle("(Reconstructed / Generated) " + "#times #epsilon(rap. gap) " if self.rapidityGapSelectionEfficiency is not None else "" + "(reweighted)")
         dpT = self.efficiencyFine.GetBinWidth(1)
         # Calculate numerator of <epsilon>_i
         for i in range(1, self.efficiencyFine.GetNbinsX() + 1):
@@ -1371,7 +1856,7 @@ class Analysis():
         self.efficiencyReweighted.Divide(histDenominator)
         self.efficiencyWithoutReweighting = self.efficiency
         self.efficiencyWithoutReweighting.SetLineColor(r.kRed)
-        self.efficiencyWithoutReweighting.SetTitle("Reconstructed / Generated, without reweighting")
+        self.efficiencyWithoutReweighting.SetTitle("(Reconstructed / Generated) " + "#times #epsilon(rap. gap) " if self.rapidityGapSelectionEfficiency is not None else "" + "(without reweighting)")
         self.efficiency = self.efficiencyReweighted
 
         # Apply reweighted correction factor
@@ -1412,53 +1897,53 @@ class Analysis():
                      f"noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}", f"noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}",
                      f"noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}", f"noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}",
                      f"{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}"]
-        fullNames = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullName + "_KPiFromD0FS/Pt" for fullName in fullNames]
-        tmpDict = self.get_histograms(directory, fullNames)
+        fullNames = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullName + "_KPiFromD0/Pt" for fullName in fullNames]
+        tmpDict = get_histograms(directory, self.runList, fullNames)
         # Reconstructed, matched D0 in selected events, but with no track or pair cuts. This is the denominator for all partial efficiencies due to track cuts
-        histDenom = tmpDict["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS/Pt"]
+        histDenom = tmpDict["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0/Pt"]
         histDenom = histDenom.Rebin(len(self.ptBinsArray) - 1, histDenom.GetName(), np.asarray(self.ptBinsArray, 'd'))
 
-        histD0PtKaonTPC = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTPCCut']}:noTrackCut_KPiFromD0FS/Pt"]
+        histD0PtKaonTPC = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTPCCut']}:noTrackCut_KPiFromD0/Pt"]
         histD0PtKaonTPC = histD0PtKaonTPC.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTPC.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., kaon TPC nSigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTPC, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtKaonTOF = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTOFCut']}:noTrackCut_KPiFromD0FS/Pt"]
+        histD0PtKaonTOF = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTOFCut']}:noTrackCut_KPiFromD0/Pt"]
         histD0PtKaonTOF = histD0PtKaonTOF.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTOF.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., kaon TOF nSigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTOF, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtEtaCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['etaCut']}_KPiFromD0FS/Pt"]
+        histD0PtEtaCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['etaCut']}_KPiFromD0/Pt"]
         histD0PtEtaCut = histD0PtEtaCut.Rebin(len(self.ptBinsArray) - 1, histD0PtEtaCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track |eta|<0.9", "Rec. matched D0 in sel evt.", histD0PtEtaCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtPtCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['ptCut']}_KPiFromD0FS/Pt"]
+        histD0PtPtCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['ptCut']}_KPiFromD0/Pt"]
         histD0PtPtCut = histD0PtPtCut.Rebin(len(self.ptBinsArray) - 1, histD0PtPtCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track pT>0.5 GeV/c", "Rec. matched D0 in sel evt.", histD0PtPtCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtITSibCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}_KPiFromD0FS/Pt"]
+        histD0PtITSibCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}_KPiFromD0/Pt"]
         histD0PtITSibCut = histD0PtITSibCut.Rebin(len(self.ptBinsArray) - 1, histD0PtITSibCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track IsITSibAny=1", "Rec. matched D0 in sel evt.", histD0PtITSibCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtTPCnclsCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}_KPiFromD0FS/Pt"]
+        histD0PtTPCnclsCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}_KPiFromD0/Pt"]
         histD0PtTPCnclsCut = histD0PtTPCnclsCut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCnclsCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track TPC nCls > 50", "Rec. matched D0 in sel evt.", histD0PtTPCnclsCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtDCAzCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}_KPiFromD0FS/Pt"]
+        histD0PtDCAzCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}_KPiFromD0/Pt"]
         histD0PtDCAzCut = histD0PtDCAzCut.Rebin(len(self.ptBinsArray) - 1, histD0PtDCAzCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track |DCAz| < 0.3 cm", "Rec. matched D0 in sel evt.", histD0PtDCAzCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtTPCchi2Cut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}_KPiFromD0FS/Pt"]
+        histD0PtTPCchi2Cut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}_KPiFromD0/Pt"]
         histD0PtTPCchi2Cut = histD0PtTPCchi2Cut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCchi2Cut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track TPCchi2 < 4", "Rec. matched D0 in sel evt.", histD0PtTPCchi2Cut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtAllTrackCuts = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}_KPiFromD0FS/Pt"]
+        histD0PtAllTrackCuts = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}_KPiFromD0/Pt"]
         histD0PtAllTrackCuts = histD0PtAllTrackCuts.Rebin(len(self.ptBinsArray) - 1, histD0PtAllTrackCuts.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., after all track cuts", "Rec. matched D0 in sel evt.", histD0PtAllTrackCuts, histDenom)
         self.trackCutEfficiencies.append(eff)
@@ -1553,9 +2038,9 @@ class Analysis():
         self.histRawYield.GetYaxis().SetTitle("Raw D^{0} yield (1/GeV c^{-1})")
         self.histRawYield.GetXaxis().SetTitle("p_{T} (GeV c^{-1})")
         for i, bin in enumerate(self.ptBins):
-            self.histRawYield.SetBinContent(i+1, bin.nSignal / self.histRawYield.GetBinWidth(i+1))
+            self.histRawYield.SetBinContent(i+1, bin.nominalFitResult.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
-            self.histRawYield.SetBinError(i+1, bin.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nSignal)
+            self.histRawYield.SetBinError(i+1, bin.nominalFitResult.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nominalFitResult.nSignal)
         self.histRawYield.SetStats(0)
 
     def calculate_spectrum_per_event(self, draw=True):
@@ -1697,20 +2182,20 @@ class Analysis():
         self.linesFitrangeLow = []
         self.linesFitrangeHigh = []
         for i, bin in enumerate(self.ptBins):
-            self.histRawYield.SetBinContent(i+1, bin.nSignal / self.histRawYield.GetBinWidth(i+1))
+            self.histRawYield.SetBinContent(i+1, bin.nominalFitResult.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
-            self.histRawYield.SetBinError(i+1, bin.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nSignal)
+            self.histRawYield.SetBinError(i+1, bin.nominalFitResult.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nominalFitResult.nSignal)
             # Draw the histograms with fits
             self.canvasFitsYields.cd(i+1)
             bin.massPtSlice.Draw("E")
             if showFitRangeOnly:
-                bin.massPtSlice.GetXaxis().SetRangeUser(bin.fitRange[0], bin.fitRange[1])
+                bin.massPtSlice.GetXaxis().SetRangeUser(bin.nominalFitResult.lowerMass, bin.nominalFitResult.upperMass)
             else:
                 bin.massPtSlice.GetXaxis().SetRangeUser(1.5, 2.2)
             bin.massPtSlice.SetStats(0)
-            bin.fitFunc.Draw("same")
-            bin.backgroundFunc.Draw("same")
-            bin.totalBackgroundFunc.Draw("same")
+            bin.nominalFitResult.fitFunc.Draw("same")
+            bin.nominalFitResult.backgroundFunc.Draw("same")
+            bin.nominalFitResult.totalBackgroundFunc.Draw("same")
             # Text box with info
             self.textBoxesFitsYields.append(r.TPaveText(0.65, 0.5, 0.95, 0.85, "NDC"))
             self.textBoxesFitsYields[i].SetName(f"textbox_bin{i}")
@@ -1720,13 +2205,13 @@ class Analysis():
             self.textBoxesFitsYields[i].SetTextAlign(12)
             self.textBoxesFitsYields[i].SetTextFont(42)
             self.textBoxesFitsYields[i].SetTextSize(0.04)
-            self.textBoxesFitsYields[i].AddText(f"#mu = {bin.fitMu:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"#sigma = {bin.fitSigma:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"S = {bin.nSignal:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"B = {bin.nBackground:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"S/#sqrt{{S+B}} = {bin.nSignal/(np.sqrt(bin.nSignal + bin.nBackground)):.3f}")
-            self.textBoxesFitsYields[i].AddText(f"Refl/S = {bin.nReflBackground/bin.nSignal:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"#chi^{{2}}/ndf = {bin.fitChi2Ndf:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"#mu = {bin.nominalFitResult.fitMu:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"#sigma = {bin.nominalFitResult.fitSigma:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"S = {bin.nominalFitResult.nSignal:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"S/B (3#sigma)= {bin.nominalFitResult.signalToBackground:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"S/#sqrt{{S+B}} = {bin.nominalFitResult.signalSignificance:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"Refl/S = {bin.nominalFitResult.nReflBackground/bin.nominalFitResult.nSignal:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"#chi^{{2}}/ndf = {bin.nominalFitResult.fitChi2Ndf:.3f}")
             self.textBoxesFitsYields[i].Draw()
 
         # Draw raw yield histogram
@@ -1740,12 +2225,12 @@ class Analysis():
             for i, bin in enumerate(self.ptBins):
                 self.canvasFitsYields.cd(i+1)
                 # Lines to show fitting range
-                self.linesFitrangeLow.append(r.TLine(bin.fitRange[0], r.gPad.GetUymin(), bin.fitRange[0], r.gPad.GetUymax()))
+                self.linesFitrangeLow.append(r.TLine(bin.nominalFitResult.lowerMass, r.gPad.GetUymin(), bin.nominalFitResult.lowerMass, r.gPad.GetUymax()))
                 self.linesFitrangeLow[i].SetLineColor(r.kBlack)
                 self.linesFitrangeLow[i].SetLineStyle(2)
                 self.linesFitrangeLow[i].SetLineWidth(1)
                 self.linesFitrangeLow[i].Draw()
-                self.linesFitrangeHigh.append(r.TLine(bin.fitRange[1], r.gPad.GetUymin(), bin.fitRange[1], r.gPad.GetUymax()))
+                self.linesFitrangeHigh.append(r.TLine(bin.nominalFitResult.upperMass, r.gPad.GetUymin(), bin.nominalFitResult.upperMass, r.gPad.GetUymax()))
                 self.linesFitrangeHigh[i].SetLineColor(r.kBlack)
                 self.linesFitrangeHigh[i].SetLineStyle(2)
                 self.linesFitrangeHigh[i].SetLineWidth(1)
@@ -1765,20 +2250,23 @@ class Analysis():
             self.canvasReflFits.cd(i+1)
             bin.massPtSliceReflected.Draw("E")
             bin.massPtSliceReflected.SetStats(0)
-            bin.reflFunc1 = r.TF1(f"fReflGauss1_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2)", 1.3, 2.3)
-            bin.reflFunc1.SetParameters(bin.reflFunc.GetParameter("Amp1"), bin.reflFunc.GetParameter("Mean1"), bin.reflFunc.GetParameter("Sigma1"))
+            bin.reflFunc1 = r.TF1(f"fReflGauss1_bin{bin.index}", fit_functions.signal, 1.3, 2.3, 3)
+            bin.reflFunc1.SetParameters(np.array([bin.reflFunc.GetParameter(0) * bin.reflFunc.GetParameter(1),
+                                                  bin.reflFunc.GetParameter(2), bin.reflFunc.GetParameter(3)], dtype='d'))
             bin.reflFunc1.SetLineColor(r.kGreen)
             bin.reflFunc1.SetLineStyle(r.kDashed)
             bin.reflFunc1.Draw("same")
-            bin.reflFunc2 = r.TF1(f"fReflGauss2_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2)", 1.3, 2.3)
-            bin.reflFunc2.SetParameters(bin.reflFunc.GetParameter("Amp2"), bin.reflFunc.GetParameter("Mean2"), bin.reflFunc.GetParameter("Sigma2"))
-            bin.reflFunc2.SetLineColor(r.kBlue)
+            bin.reflFunc2 = r.TF1(f"fReflGauss2_bin{bin.index}", fit_functions.signal, 1.3, 2.3, 3)
+            bin.reflFunc2.SetParameters(np.array([bin.reflFunc.GetParameter(0) * (1 - bin.reflFunc.GetParameter(1)),
+                                                  bin.reflFunc.GetParameter(4), bin.reflFunc.GetParameter(5)], dtype='d'))
+            bin.reflFunc2.SetLineColor(r.kMagenta)
             bin.reflFunc2.SetLineStyle(r.kDashed)
             bin.reflFunc2.Draw("same")
-            bin.reflFuncSum = r.TF1(f"fReflGauss1Gauss2_bin{bin}", "[0]*exp(-0.5*((x-[1])/[2])^2) + [3]*exp(-0.5*((x-[4])/[5])^2)", 1.3, 2.3)
-            bin.reflFuncSum.SetParameters(np.asarray(bin.reflFunc.GetParameters()))
-            bin.reflFuncSum.SetLineColor(r.kRed)
-            bin.reflFuncSum.Draw("same")
+            # bin.reflFuncSum = r.TF1(f"fReflGauss1Gauss2_bin{bin}", fit_functions.reflected_background, 1.3, 2.3, 6)
+            # bin.reflFuncSum.SetParameters(np.asarray(bin.reflFunc.GetParameters()))
+            # bin.reflFuncSum.SetLineColor(r.kRed)
+            bin.reflFunc.SetLineColor(r.kRed)
+            bin.reflFunc.Draw("same")
             # Text box with info
             self.textBoxesReflected.append(r.TPaveText(0.6, 0.4, 1., 0.9, "NDC"))
             self.textBoxesReflected[i].SetName(f"textboxreflected_bin{i}")
@@ -1790,10 +2278,10 @@ class Analysis():
             self.textBoxesReflected[i].SetTextSize(0.04)
             self.textBoxesReflected[i].AddText(f"Refl/S = {bin.reflectedRatio:.3f}")
             # self.textBoxesReflected[i].AddText(f"chi2/ndof = {bin.reflChi2Ndf:.3f}")
-            self.textBoxesReflected[i].AddText(f"Amp1 = {bin.reflFunc.GetParameter('Amp1'):.3f}")
+            self.textBoxesReflected[i].AddText(f"Integral = {bin.reflFunc.GetParameter('Integral'):.3f}")
+            self.textBoxesReflected[i].AddText(f"RelNorm = {bin.reflFunc.GetParameter('RelNorm'):.3f}")
             self.textBoxesReflected[i].AddText(f"Mean1 = {bin.reflFunc.GetParameter('Mean1'):.3f}")
             self.textBoxesReflected[i].AddText(f"Sigma1 = {bin.reflFunc.GetParameter('Sigma1'):.3f}")
-            self.textBoxesReflected[i].AddText(f"Amp2 = {bin.reflFunc.GetParameter('Amp2'):.3f}")
             self.textBoxesReflected[i].AddText(f"Mean2 = {bin.reflFunc.GetParameter('Mean2'):.3f}")
             self.textBoxesReflected[i].AddText(f"Sigma2 = {bin.reflFunc.GetParameter('Sigma2'):.3f}")
             self.textBoxesReflected[i].Draw()
