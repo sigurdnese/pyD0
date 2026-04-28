@@ -6,29 +6,50 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from deprecated import deprecated
+import pandas as pd
 from . import fit_functions
 from . import utils
+
+# Global list to keep callables alive
+_tf1_callables = []
 
 # Direct all prints in ROOT through its internal error handler (fix 'Q' option in TH1.Fit)
 r.gPrintViaErrorHandler = True
 
-DEFAULT_RUNLIST = ['545367', '545345', '545332', '545312', '545311', '545296', '545294', '545291', '545289', '545262', '545249', '545246', '545223', '545222', '545210', '545185', '545184', '545171', '545117', '545103', '545086', '545064', '545063', '545062', '545060', '545047', '545044', '545042', '545041', '545009', '545008', '545004', '544992', '544991', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013']
+DEFAULT_RUNLIST_PASS4 = ['545367', '545345', '545332', '545312', '545311', '545296', '545294', '545291', '545289', '545262', '545249', '545246', '545223', '545222', '545210', '545185', '545184', '545171', '545117', '545103', '545086', '545064', '545063', '545062', '545060', '545047', '545044', '545042', '545041', '545009', '545008', '545004', '544992', '544991', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013']
+
+RUNLIST_PASS4_UPCSETTINGS_YES = ['545246', '545311', '545262', '545222', '545367', '544754', '545117', '545332', '545041', '545171', '544886', '544794', '544913', '544914', '545042', '544961', '544692', '545062', '545008', '545210', '544742', '544887', '545009', '544454', '544511', '544098', '544568', '545044', '544475', '544964', '544694', '544390', '544512', '544868', '544583', '544476', '544122', '544550', '544696', '545249', '544551', '544391', '544514', '544917', '544492', '544968', '545063', '545047', '544585', '544515', '544477', '544392', '545064', '545185', '544797', '544992', '545312', '544896', '544518', '545223', '544124', '545291', '544013', '545294', '545296'] 
+
+RUNLIST_PASS4_UPCSETTINGS_NO = ['544123', '544490', '544614', '544652', '544767', '544947', '544474', '544640', '544548', '544564', '544672', '544739', '544116', '544508', '544491', '544580', '544184', '544674', '544389', '544653', '544565', '544510', '544028', '544549', '544185', '544582', '545289', '545004', '544567', '545060', '544931', '545184']
+
+DEFAULT_RUNLIST_PASS5 = ['545312', '545296', '545294', '545291', '545249', '545223', '545210', '545185', '545064', '545063', '545047', '545044', '545009', '544992', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013', '545066', '545295']
 
 class FileStructures(Enum):
     RUNDIRS = auto()
     FLAT = auto()
 
-def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStructure = None):
+def project_fiducial_acceptance(hist, minY, maxY):
+    # Project a pT histogram from a y vs pT histogram
+    lowerYBin = hist.GetXaxis().FindBin(minY)
+    upperYBin = hist.GetXaxis().FindBin(maxY) - 1
+    resultHist = hist.ProjectionY(f"{hist.GetName()}_y_{minY}_{maxY}", lowerYBin, upperYBin)
+    return resultHist
+
+def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStructure = None, fileName = 'AnalysisResults.root'):
     if histogramNamesfileStructure is None:
         histogramNamesfileStructure = FileStructures.FLAT
     splitHistNames = [s.split("/") for s in fullHistogramNames] 
     namesDict = {}
-    for irow, row in enumerate(splitHistNames):
+    for irow, (row, fullName) in enumerate(zip(splitHistNames, fullHistogramNames)):
         depth = len(row)
-        if row[1] == 'output;1':
+        if row[1] == 'output;1' or row[1] == 'Statistics;1':
             depth -= 1
             row[0] += ('/' + row[1])
             row = np.delete(row, 1)
+        elif row[0] == 'eventselection-run3' and 'luminosity' in row[1]:
+            # Special case: lumi hist can be accessed directly
+            depth = 1
+            namesDict[fullName] = fullName
         if depth == 3:
             if row[0] not in namesDict:
                 namesDict[row[0]] = {row[1] : []}
@@ -39,10 +60,10 @@ def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStr
             if row[0] not in namesDict:
                 namesDict[row[0]] = []
             namesDict[row[0]].append(row[1])
-
+        elif depth == 1:
+            pass
         else:
             raise Exception(f"Histogram name with depth = {depth}, don't know what to do!")
-
     histograms = {}
     print(f"Getting histograms from {directory}...")
     if depth == 3:
@@ -51,7 +72,7 @@ def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStr
             if (histogramNamesfileStructure == FileStructures.FLAT):
                 filePath = f"{directory}/AnalysisResults_run{run}.root"
             elif (histogramNamesfileStructure == FileStructures.RUNDIRS):
-                filePath = f"{directory}/{run}/AnalysisResults.root"
+                filePath = f"{directory}/{run}/{fileName}"
             else:
                 raise Exception("Not a valid FileStructure!")
             with uproot.open(filePath) as file:
@@ -80,7 +101,7 @@ def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStr
             if (histogramNamesfileStructure == FileStructures.FLAT):
                 filePath = f"{directory}/AnalysisResults_run{run}.root"
             elif (histogramNamesfileStructure == FileStructures.RUNDIRS):
-                filePath = f"{directory}/{run}/AnalysisResults.root"
+                filePath = f"{directory}/{run}/{fileName}"
             else:
                 raise Exception("Not a valid FileStructure!")
             with uproot.open(filePath) as file:
@@ -96,6 +117,27 @@ def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStr
                                 histograms[fullName] = tmpHistPr
                             else:
                                 histograms[fullName].Add(tmpHistPr)
+
+    elif depth == 1:
+        for irun, run in enumerate(runList):
+            print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+            if (histogramNamesfileStructure == FileStructures.FLAT):
+                filePath = f"{directory}/AnalysisResults_run{run}.root"
+            elif (histogramNamesfileStructure == FileStructures.RUNDIRS):
+                filePath = f"{directory}/{run}/{fileName}"
+            else:
+                raise Exception("Not a valid FileStructure!")
+            with uproot.open(filePath) as file:
+                for fullName in namesDict.keys():
+                    tmpHist = file[fullName]
+                    tmpHistWritable = tmpHist.to_writable()
+                    tmpHistPr = tmpHistWritable.to_pyroot()
+                    if fullName not in histograms:
+                        histograms[fullName] = tmpHistPr
+                    else:
+                        # This is a special case for lumi histograms, which each have their own axis labels per run.
+                        # ROOT will use TH1.Merge instead, this seems to give the expected outcome
+                        histograms[fullName].Add(tmpHistPr)
 
     print("\nDone!")
     return histograms
@@ -113,15 +155,19 @@ def build_histograms_map(filePath):
 
     return histogramsMap
 
-def get_histograms_from_file(filePath, fullHistogramNames):
+def get_histograms_from_file(filePath, fullHistogramNames, fileName = 'AnalysisResults.root'):
     splitHistNames = [s.split("/") for s in fullHistogramNames] 
     namesDict = {}
-    for irow, row in enumerate(splitHistNames):
+    for irow, (row, fullName) in enumerate(zip(splitHistNames, fullHistogramNames)):
         depth = len(row)
-        if row[1] == 'output;1':
+        if row[1] == 'output;1' or row[1] == 'Statistics;1':
             depth -= 1
             row[0] += ('/' + row[1])
             row = np.delete(row, 1)
+        elif row[0] == 'eventselection-run3' and ('luminosity' in row[1] or 'bcselection' in row[1]):
+            # Special case: lumi hist can be accessed directly
+            depth = 1
+            namesDict[fullName] = fullName
         if depth == 3:
             if row[0] not in namesDict:
                 namesDict[row[0]] = {row[1] : []}
@@ -132,7 +178,8 @@ def get_histograms_from_file(filePath, fullHistogramNames):
             if row[0] not in namesDict:
                 namesDict[row[0]] = []
             namesDict[row[0]].append(row[1])
-
+        elif depth == 1:
+            pass
         else:
             raise Exception(f"Histogram name with depth = {depth}, don't know what to do!")
 
@@ -165,6 +212,19 @@ def get_histograms_from_file(filePath, fullHistogramNames):
                             tmpHistWritable = tmpHist.to_writable()
                             tmpHistPr = tmpHistWritable.to_pyroot()
                             histograms[fullName] = tmpHistPr
+
+    elif depth == 1:
+        with uproot.open(filePath) as file:
+            for fullName in namesDict.keys():
+                tmpHist = file[fullName]
+                tmpHistWritable = tmpHist.to_writable()
+                tmpHistPr = tmpHistWritable.to_pyroot()
+                if fullName not in histograms:
+                    histograms[fullName] = tmpHistPr
+                else:
+                    # This is a special case for lumi histograms, which each have their own axis labels per run.
+                    # ROOT will use TH1.Merge instead, this seems to give the expected outcome
+                    histograms[fullName].Add(tmpHistPr)
 
     return histograms
 
@@ -501,7 +561,7 @@ def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, m
 
     return ax, listDataNumCandidates, listMcNumCandidates
 
-def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorDir, denominatorDir, runListFull, runList1, runList2, minPt=0., maxPt=20., text=False):
+def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorDir, denominatorDir, runListFull, runList1, runList2, minPt=0., maxPt=20., text=False, doPlot=True):
     """
     Given a directory of AnalysisResults.root files for each run, create a plot showing a given efficiency vs run number. Use uproot for I/O.
     """
@@ -584,30 +644,45 @@ def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, de
 
     totalNumErrRunList1 = np.sqrt(totalNumCountsRunList1)
     totalDenErrRunList1 = np.sqrt(totalDenCountsRunList1)
-    meanEffRunList1 = totalNumCountsRunList1 / totalDenCountsRunList1
-    meanEffErrRunList1 = (1/totalDenCountsRunList1) * np.sqrt(totalNumCountsRunList1 * (1 - totalNumCountsRunList1/totalDenCountsRunList1)) # Binomial error calculation
+    try:
+        meanEffRunList1 = totalNumCountsRunList1 / totalDenCountsRunList1
+    except:
+        meanEffRunList1 = 0
+    try:
+        meanEffErrRunList1 = (1/totalDenCountsRunList1) * np.sqrt(totalNumCountsRunList1 * (1 - totalNumCountsRunList1/totalDenCountsRunList1)) # Binomial error calculation
+    except:
+        meanEffErrRunList1 = 0
 
     totalNumErrRunList2 = np.sqrt(totalNumCountsRunList2)
     totalDenErrRunList2 = np.sqrt(totalDenCountsRunList2)
-    meanEffRunList2 = totalNumCountsRunList2 / totalDenCountsRunList2
-    meanEffErrRunList2 = (1/totalDenCountsRunList2) * np.sqrt(totalNumCountsRunList2 * (1 - totalNumCountsRunList2/totalDenCountsRunList2)) # Binomial error calculation
+    try:
+        meanEffRunList2 = totalNumCountsRunList2 / totalDenCountsRunList2
+    except:
+        meanEffRunList2 = 0
+    try:
+        meanEffErrRunList2 = (1/totalDenCountsRunList2) * np.sqrt(totalNumCountsRunList2 * (1 - totalNumCountsRunList2/totalDenCountsRunList2)) # Binomial error calculation
+    except:
+        meanEffErrRunList2 = 0
         
     runAxis = np.arange(len(runListFull))
-    plt.figure(figsize=(15, 5))
-    plt.title(f"$\\frac{{\\text{{{numeratorTitle}}}}}{{\\text{{{denominatorTitle}}}}}$, {minPt} < $p_\\text{{T}}$ < {maxPt} GeV/c")
-    plt.bar(runAxis, listMeanEff, yerr=listMeanEffError, color=listColors, capsize=3)
-    # plt.hlines(meanEffRunList1, -0.5, len(runList1)-0.5, alpha=0.5, color=dictTextColors['1'])
-    # plt.hlines(meanEffRunList2, len(runList1)-0.5, len(runList1)+len(runList2)-0.5, alpha=0.5, color=dictTextColors['2'])
-    plt.fill_between(runAxis, meanEffRunList1 - meanEffErrRunList1, meanEffRunList1 + meanEffErrRunList1, where=(runAxis > -1.) & (runAxis < len(runList1)), color=dictTextColors['1'], alpha=0.5)
-    plt.fill_between(runAxis, meanEffRunList2 - meanEffErrRunList2, meanEffRunList2 + meanEffErrRunList2, where=(runAxis > len(runList1)-1.) & (runAxis < len(runList1)+len(runList2)), color=dictTextColors['2'], alpha=0.5)
-    for i, label in enumerate(runListFull):
-        if text:
-            plt.text(runAxis[i] - 0.5, listMeanEff[i] + 0.05, f'{listMeanEff[i]:.4f}$\pm${listMeanEffError[i]:.4f}')
-        plt.text(runAxis[i], plt.ylim()[0]-(0.008*(plt.ylim()[1]-plt.ylim()[0])), label, ha='center', va='top', color=listTextColors[i], rotation=90)
-    plt.xticks(runAxis, '', rotation=90)
-    plt.ylabel('$\\langle\\epsilon\\rangle$')
-    plt.tight_layout()
-    plt.show()
+    title = f"$\\frac{{\\text{{{numeratorTitle}}}}}{{\\text{{{denominatorTitle}}}}}$, {minPt} < $p_\\text{{T}}$ < {maxPt} GeV/c"
+    if doPlot:
+        plt.figure(figsize=(15, 5))
+        plt.title(title)
+        plt.bar(runAxis, listMeanEff, yerr=listMeanEffError, color=listColors, capsize=3)
+        # plt.hlines(meanEffRunList1, -0.5, len(runList1)-0.5, alpha=0.5, color=dictTextColors['1'])
+        # plt.hlines(meanEffRunList2, len(runList1)-0.5, len(runList1)+len(runList2)-0.5, alpha=0.5, color=dictTextColors['2'])
+        plt.fill_between(runAxis, meanEffRunList1 - meanEffErrRunList1, meanEffRunList1 + meanEffErrRunList1, where=(runAxis > -1.) & (runAxis < len(runList1)), color=dictTextColors['1'], alpha=0.5)
+        plt.fill_between(runAxis, meanEffRunList2 - meanEffErrRunList2, meanEffRunList2 + meanEffErrRunList2, where=(runAxis > len(runList1)-1.) & (runAxis < len(runList1)+len(runList2)), color=dictTextColors['2'], alpha=0.5)
+        for i, label in enumerate(runListFull):
+            if text:
+                plt.text(runAxis[i] - 0.5, listMeanEff[i] + 0.05, f'{listMeanEff[i]:.4f}$\pm${listMeanEffError[i]:.4f}')
+            plt.text(runAxis[i], plt.ylim()[0]-(0.008*(plt.ylim()[1]-plt.ylim()[0])), label, ha='center', va='top', color=listTextColors[i], rotation=90)
+        plt.xticks(runAxis, '', rotation=90)
+        plt.ylabel('$\\langle\\epsilon\\rangle$')
+        plt.tight_layout()
+        plt.show()
+    return runAxis, listMeanEff, listMeanEffError, title
 
 def run_by_run_tof_matching_efficiency(runListFull, runListNo, runListYes, runListExclude, directory, dataOrMc='mc', showPlot=True, firstPtBin=0, lastPtBin=-1, firstEtaBin=0, lastEtaBin=-1, sortBy='yesno'):
     """
@@ -792,16 +867,16 @@ def run_by_run_tof_matching_efficiency(runListFull, runListNo, runListYes, runLi
     return {'runList': runListFull, 'runAxis': runAxis, 'values': listMeanHasTOF, 'errors': listMeanHasTOFErrors, 'colors': listColors, 'textColors': listTextColors, 'dictColors': dictColors, 'minPt': minPt, 'maxPt': maxPt, 'minEta': minEta, 'maxEta': maxEta}
 
 class OccupancyStudy():
-    def __init__(self, fileDirectory=None, filePath=None, runList=DEFAULT_RUNLIST.copy(),
-                 histName="analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut/MyD0OccupHisto",
-                 contribBins=[0, 2000, 4000, 20000], timeBins=[-100, -40, 40, 100]):
+    def __init__(self, fileDirectory=None, filePath=None,
+                 runList=DEFAULT_RUNLIST_PASS4.copy(), contribBins=[0, 2000, 4000, 20000], timeBins=[-100, -40, 40, 100], minPt=0, maxPt=12):
+        r.gStyle.SetPalette(r.kPastel)
         self.massRange = [0., 4.]
-        if filePath is None:
-            self.histOrig = get_histograms(fileDirectory, runList, [histName], histogramNamesfileStructure=FileStructures.RUNDIRS)[histName]
-        else:
-            tmpFile = r.TFile.Open(filePath)
-            self.histOrig = tmpFile.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyD0OccupHisto")
-        # For now, integrate over pT
+        tmpFile = r.TFile.Open(filePath)
+        self.histOrig = tmpFile.Get("analysis-asymmetric-pairing/output").FindObject("PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepTauxyzprojCut").FindObject("MyD0OccupHisto")
+        # self.histOrig = tmpFile.Get("analysis-same-event-pairing/output").FindObject("PairsBarrelSEPM_muonCandidateCut").FindObject("MyD0OccupHisto")
+        self.histEvents = tmpFile.Get("analysis-event-selection/output").FindObject("Event_AfterCuts").FindObject("MyOccupHisto")
+        self.histOrig.GetAxis(1).SetRangeUser(minPt, maxPt)
+        print(f"Projecting pT from bin {self.histOrig.GetAxis(1).FindBin(minPt)} ({self.histOrig.GetAxis(1).GetBinLowEdge(self.histOrig.GetAxis(1).FindBin(minPt))} GeV) to {self.histOrig.GetAxis(1).FindBin(maxPt)} ({self.histOrig.GetAxis(1).GetBinUpEdge(self.histOrig.GetAxis(1).FindBin(maxPt))} GeV)")
         self.hist = self.histOrig.Projection(0, 2, 3)
         # Make slices of the occupancy variable
         self.slices = {}
@@ -837,6 +912,31 @@ class OccupancyStudy():
                     new_err = (old_err**2 + err**2)**0.5  # sum errors in quadrature
                     self.histRebinned.SetBinContent(ix_new, iy_new, iz_new, new_val)
                     self.histRebinned.SetBinError(ix_new, iy_new, iz_new, new_err)
+        self.histEventsRebinned = r.TH2D(f"{self.histEvents.GetName()}_rebinned", f"{self.histEvents.GetTitle()}",
+                                   len(contribBins) - 1, np.array(contribBins, dtype='d'),
+                                   len(timeBins) - 1, np.array(timeBins, dtype='d'))
+        self.histEventsRebinned.SetDirectory(0)
+        self.histEventsRebinned.GetXaxis().SetTitle(self.histEvents.GetXaxis().GetTitle())
+        self.histEventsRebinned.GetYaxis().SetTitle(self.histEvents.GetYaxis().GetTitle())
+        for ix in range(1, self.histEvents.GetXaxis().GetNbins() + 1):
+            x = self.histEvents.GetXaxis().GetBinCenter(ix)
+            for iy in range(1, self.histEvents.GetYaxis().GetNbins() + 1):
+                y = self.histEvents.GetYaxis().GetBinCenter(iy)
+                val = self.histEvents.GetBinContent(ix, iy)
+                err = self.histEvents.GetBinError(ix, iy)
+                if val == 0 and err == 0:
+                    continue
+                # Find target bin in rebinned histogram
+                ix_new = self.histEventsRebinned.GetXaxis().FindBin(x)
+                iy_new = self.histEventsRebinned.GetYaxis().FindBin(y)
+                # Current values in the target bin
+                old_val = self.histEventsRebinned.GetBinContent(ix_new, iy_new)
+                old_err = self.histEventsRebinned.GetBinError(ix_new, iy_new)
+                # New accumulated content and error
+                new_val = old_val + val
+                new_err = (old_err**2 + err**2)**0.5  # sum errors in quadrature
+                self.histEventsRebinned.SetBinContent(ix_new, iy_new, new_val)
+                self.histEventsRebinned.SetBinError(ix_new, iy_new, new_err)
 
         for i in range(1, self.histRebinned.GetYaxis().GetNbins() + 1):
             for j in range(1, self.histRebinned.GetZaxis().GetNbins() + 1):
@@ -846,17 +946,23 @@ class OccupancyStudy():
                 h.SetDirectory(0)
                 self.slices[(i,j)] = h
 
-    def draw_inv_mass(self):
-        nW = self.histRebinned.GetYaxis().GetNbins()
-        nH = self.histRebinned.GetZaxis().GetNbins()
+    def draw_inv_mass(self, nW=None, nH=None):
+        if nW is None and nH is None:
+            nW = self.histRebinned.GetYaxis().GetNbins()
+            nH = self.histRebinned.GetZaxis().GetNbins()
+            if nW == 1:
+                nW = nH
+                nH = 1
         self.cGridInvM = r.TCanvas('cGridInvM', 'cGridInvM', 500*nW, 400*nH)
         self.cGridInvM.Divide(nW, nH, 1e-10, 1e-10)
-        for i in range(1, self.histRebinned.GetYaxis().GetNbins() + 1):
-            for j in range(1, self.histRebinned.GetZaxis().GetNbins() + 1):
-                self.cGridInvM.cd(i + nW*(j-1))
+        count = 0
+        for j in range(1, self.histRebinned.GetZaxis().GetNbins() + 1):
+            for i in range(1, self.histRebinned.GetYaxis().GetNbins() + 1):
+                count += 1
+                self.cGridInvM.cd(count)
                 self.slices[(i,j)].Draw()
                 if (i,j) in self.fitResults:
-                    self.textBoxes[(i,j)] = r.TPaveText(0.15, 0.15, 0.5, 0.5, "NDC")
+                    self.textBoxes[(i,j)] = r.TPaveText(0.5, 0.25, 0.9, 0.65, "NDC")
                     self.textBoxes[(i,j)].SetName(f"textbox_{i}_{j}")
                     self.textBoxes[(i,j)].SetFillColor(0)
                     self.textBoxes[(i,j)].SetFillStyle(0)
@@ -866,26 +972,135 @@ class OccupancyStudy():
                     self.textBoxes[(i,j)].SetTextSize(0.04)
                     self.textBoxes[(i,j)].AddText(f"#mu = {self.fitResults[(i,j)].fitMu:.3f}")
                     self.textBoxes[(i,j)].AddText(f"#sigma = {self.fitResults[(i,j)].fitSigma:.3f}")
-                    self.textBoxes[(i,j)].AddText(f"S = {self.fitResults[(i,j)].nSignal:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"S = {self.fitResults[(i,j)].nSignal:.0f} #pm {self.fitResults[(i,j)].nSignal*self.fitResults[(i,j)].relativeStatError:.0f}")
                     self.textBoxes[(i,j)].AddText(f"S/B (3#sigma)= {self.fitResults[(i,j)].signalToBackground:.3f}")
                     self.textBoxes[(i,j)].AddText(f"S/#sqrt{{S+B}} = {self.fitResults[(i,j)].signalSignificance:.3f}")
+                    self.textBoxes[(i,j)].AddText(f"S/Evt = {self.fitResults[(i,j)].yieldPerEvent:.3E} #pm {self.fitResults[(i,j)].yieldPerEventError:.3E}")
                     self.textBoxes[(i,j)].AddText(f"#chi^{{2}}/ndf = {self.fitResults[(i,j)].fitChi2Ndf:.3f}")
                     self.textBoxes[(i,j)].Draw()
-                self.slices[(i,j)].SetAxisRange(self.slices[(i,j)].GetBinContent(self.slices[(i,j)].GetNbinsX() - 1)*0.95,
-                                                self.slices[(i,j)].GetBinContent(1)*1.05,
+                self.slices[(i,j)].SetAxisRange(0.0,
+                                                self.slices[(i,j)].GetBinContent(self.slices[(i,j)].FindBin(self.fitResults[(i,j)].fitMu))*1.1,
                                                 'Y')
         self.cGridInvM.Draw()
         self.cGridInvM.Modified()
         self.cGridInvM.Update()
 
-    def fit_inv_mass(self, indices, backgroundFunction, fitRange = [1.64, 2.08], doPrint=True,
-                     signalMuRange=None, signalSigmaRange=None,    
-                     backgroundInitialParams=None,
-                     simpleFitInitialParams=[100, 1.85, 0.015, 100, 0],
-                     simpleFitRange=[1.75, 1.98],
-                     shadowRange=[1.8, 1.9]):
+    def calculate_yield_per_event(self, indices):
+        self.fitResults[indices].yieldPerEvent = self.fitResults[indices].nSignal / self.histEventsRebinned.GetBinContent(indices[0], indices[1])
+        self.fitResults[indices].yieldPerEventError = self.fitResults[indices].yieldPerEvent * np.sqrt((self.fitResults[indices].relativeStatError)**2 + (self.histEventsRebinned.GetBinError(indices[0], indices[1]) / self.histEventsRebinned.GetBinContent(indices[0], indices[1]))**2)
+
+    def create_yield_per_event_histogram(self):
+        self.histYieldPerEvent = self.histEventsRebinned.Clone("histYieldPerEvent")
+        self.histYieldPerEvent.Reset()
+        self.histYieldPerEvent.SetTitle("Yield per event")
+        self.histYieldPerEvent.GetXaxis().SetTitle(self.histEvents.GetXaxis().GetTitle())
+        self.histYieldPerEvent.GetYaxis().SetTitle(self.histEvents.GetYaxis().GetTitle())
+        for i in range(1, self.histYieldPerEvent.GetXaxis().GetNbins() + 1):
+            for j in range(1, self.histYieldPerEvent.GetYaxis().GetNbins() + 1):
+                self.histYieldPerEvent.SetBinContent(i, j, self.fitResults[(i, j)].yieldPerEvent)
+                self.histYieldPerEvent.SetBinError(i, j, self.fitResults[(i, j)].yieldPerEventError)
+
+    def draw_yield_per_event(self, width=1200, height=800):
+        if not hasattr(self, 'histYieldPerEvent'):
+            self.create_yield_per_event_histogram()
+        self.cYieldPerEvent = r.TCanvas('cYieldPerEvent', 'cYieldPerEvent', width, height)
+        self.cYieldPerEvent.cd()
+        self.histYieldPerEvent.Draw('colz texte')
+        self.histYieldPerEvent.SetStats(0)
+        self.cYieldPerEvent.Draw()
+
+    def draw_yield_per_event_projections(self):
+        if not hasattr(self, 'histYieldPerEvent'):
+            self.create_yield_per_event_histogram()
+        self.histYieldPerEventProjPileup = self.histYieldPerEvent.ProjectionX('histYieldPerEventProjPileup', firstybin=0, lastybin=-1)
+        self.histYieldPerEventProjTime = self.histYieldPerEvent.ProjectionY('histYieldPerEventProjTime', firstxbin=0, lastxbin=-1)
+        self.cProjections = r.TCanvas('cProjections', 'cProjections', 1600, 600)
+        self.cProjections.Divide(2,1)
+        self.cProjections.cd(1)
+        self.histYieldPerEventProjPileup.Draw()
+        self.histYieldPerEventProjPileup.SetStats(0)
+        self.cProjections.cd(2)
+        self.histYieldPerEventProjTime.Draw()
+        self.histYieldPerEventProjTime.SetStats(0)
+        self.cProjections.Draw()
+
+    def fit_inv_mass_jpsi(self, histogram, identifier, backgroundFunction, fitRange = [2.5, 3.5], doPrint=True,
+                          signalMuRange=None, signalSigmaRange=None,    
+                          backgroundInitialParams=None):
         # Create the results object to save info on this fit
         fitResult = FitResult(fitRange[0], fitRange[1], backgroundFunction.__name__)
+        if doPrint:
+            print(f"====== Fitting {identifier} ({histogram.GetTitle()}) ======")
+
+        backgroundNPar = fit_functions.background_npar[backgroundFunction.__name__]
+        if backgroundInitialParams is not None and len(backgroundInitialParams) != backgroundNPar:
+            print(f"WARNING: {len(backgroundInitialParams)} initial parameters for combinatorial background specified, but '{backgroundFunction.__name__}' takes {backgroundNPar} parameters!")
+        # Get the complete function to be used for the fit
+        fitFunc = fit_functions.make_jpsi_fit_model(backgroundFunction, backgroundNPar, fitRange[0], fitRange[1])
+        fitFunc.SetName(f"fitFunc_bin_{identifier}")
+        fitFunc.SetNpx(1000)
+        # Parameters from presentation by Anna Binoy and Amrit Gautam in PAG-UPC Oct 28 2025
+        fitFunc.SetParameter(0, 1000) # N
+        fitFunc.SetParameter(1, 3.07) # m0
+        fitFunc.SetParameter(2, 0.019) # sigma
+        fitFunc.FixParameter(3, 1.3009) # alphaL
+        fitFunc.FixParameter(4, 5.4258) # nL
+        fitFunc.FixParameter(5, 1.8187) # alphaR
+        fitFunc.FixParameter(6, 12.3646) # nR
+        # Set the background parameters to safe defaults (avoid division by 0)
+        for i in range(backgroundNPar):
+            fitFunc.SetParameter(7 + i, 1.0 if backgroundInitialParams is None else backgroundInitialParams[i])
+        if doPrint:
+            print("Initially, the combinatorial background function parameters are:")
+            for i in range(backgroundNPar):
+                print(f"par[{7 + i}] = {fitFunc.GetParameter(7 + i)}")
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # If specified, set range for the signal mean
+        if signalMuRange is not None:
+            fitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
+        fitResult.result = histogram.Fit(fitFunc, "MES" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        # Store the functions for plotting and calculations
+        fitFuncParams = [fitFunc.GetParameters()[i] for i in range(fitFunc.GetNpar())]
+        fitFuncParErrors = [fitFunc.GetParErrors()[i] for i in range(fitFunc.GetNpar())]
+        if doPrint:
+            print(f"fitFuncParams = {[str(par)+'+-'+str(err) for (par, err) in zip(fitFuncParams, fitFuncParErrors)]}")
+        signalFunc = r.TF1(f"signalFunc_bin{bin}", fit_functions.dscb, self.massRange[0], self.massRange[1], 7)
+        signalFunc.SetParameters(np.array(fitFuncParams[0:7], dtype='d'))
+        signalFunc.SetParErrors(np.array(fitFuncParErrors[0:7], dtype='d'))
+        backgroundFunc = r.TF1(f"backgroundFunc_bin{bin}", backgroundFunction, self.massRange[0], self.massRange[1], backgroundNPar)
+        backgroundFunc.SetParameters(np.array(fitFuncParams[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetParErrors(np.array(fitFuncParErrors[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetLineColor(r.kBlue)
+        try:
+            fitResult.fitChi2Ndf = fitFunc.GetChisquare() / fitFunc.GetNDF()
+        except:
+            print("WARNING: Did not manage to calculate the chi2/ndf for the fit function!")
+            fitResult.fitChi2Ndf = 0
+        fitResult.fitMu = fitFunc.GetParameter('m0')
+        fitResult.fitSigma = fitFunc.GetParameter('sigma')
+        fitResult.nSignal = signalFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / histogram.GetBinWidth(1)
+        fitResult.nCombBackground = backgroundFunc.Integral(fitResult.fitMu - 3*fitResult.fitSigma, fitResult.fitMu + 3*fitResult.fitSigma) / histogram.GetBinWidth(1)
+        if doPrint:
+            print(f"{identifier} nCombBackground = {fitResult.nCombBackground} was calculated by integration from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}")
+        fitResult.signalToBackground = fitResult.nSignal / (fitResult.nCombBackground)
+        fitResult.signalSignificance = fitResult.nSignal / np.sqrt(fitResult.nSignal + fitResult.nCombBackground)
+        fitResult.relativeStatError = 1. / fitResult.signalSignificance
+        if doPrint:
+            print(f"{identifier} signal, significance, statistical error, and S/B were calculated by integrating the signal and background components from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}, yielding nSig={fitResult.nSignal}, nComb={fitResult.nCombBackground}")
+        return fitResult
+        # self.fitResults[indices] = fitResult
+        # self.calculate_yield_per_event(indices)
+
+    def fit_inv_mass_D0(self, indices, backgroundFunction, fitRange = [1.64, 2.08], doPrint=True,
+                        signalMuRange=None, signalSigmaRange=None,    
+                        backgroundInitialParams=None,
+                        simpleFitInitialParams=[100, 1.85, 0.015, 100, 0],
+                        simpleFitRange=[1.75, 1.98],
+                        shadowRange=[1.8, 1.9]):
+        # Create the results object to save info on this fit
+        fitResult = FitResult(fitRange[0], fitRange[1], backgroundFunction.__name__, 0)
         if doPrint:
             print(f"====== Fitting bin {indices} ({self.slices[indices].GetTitle()}) ======")
 
@@ -997,7 +1212,86 @@ class OccupancyStudy():
         if doPrint:
             print(f"bin {indices} signal significance and S/B were calculated by integrating the signal and background components from {fitResult.fitMu - 3*fitResult.fitSigma} to {fitResult.fitMu + 3*fitResult.fitSigma}, yielding nSig={signalIntegral3Sigma}, nComb={fitResult.nCombBackground}, nReflBackground (3#sigma)={reflIntegral3Sigma}")
         self.fitResults[indices] = fitResult
+        self.calculate_yield_per_event(indices)
 
+    def calculate_yield_vs_ir(self, dir, lumiFilePath, interactionRateFile='./interactionRate.txt', excludedRuns=[]):
+        # Get lumi hist
+        lumiFile = r.TFile.Open(lumiFilePath)
+        self.histLumi = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTCEafterBCcuts')
+        # Put interaction rates in a dict
+        ir = {}
+        with open(interactionRateFile) as f:
+            for line in f:
+                (key, val) = line.split()
+                ir[str(key)] = float(val)
+        self.runHists = {}
+        self.runFitResults = {}
+        listRun = []
+        listIr = []
+        listYield = []
+        listEvents = []
+        listEventsSelected = []
+        listYieldPerEvent = []
+        listYieldPerEventError = []
+        listYieldPerSelectedEvent = []
+        listYieldPerSelectedEventError = []
+        listLumi = []
+        listYieldPerLumi = []
+        listYieldPerLumiError = []
+        histNames = ["analysis-same-event-pairing/output;1/PairsBarrelSEPM_muonCandidateCut/MyMassPt", "analysis-event-selection/output;1/Event_BeforeCuts/VtxZ", "analysis-event-selection/output;1/Event_AfterCuts/VtxZ"]
+        for irun, (run, rate) in enumerate(ir.items()):
+            if run in excludedRuns:
+                print(f"Skipping run {run}              ")
+                continue
+            print(f"Processing run {run} ({irun+1}/{len(ir)})...            ", end='\r')
+            try:
+                tmpHistDict = get_histograms_from_file(f"{dir}/{run}/AnalysisResults.root", histNames)
+            except:
+                continue
+            tmpHistEvent = tmpHistDict["analysis-event-selection/output;1/Event_BeforeCuts/VtxZ"]
+            tmpHistEventSelected = tmpHistDict["analysis-event-selection/output;1/Event_AfterCuts/VtxZ"]
+            tmpHist = tmpHistDict["analysis-same-event-pairing/output;1/PairsBarrelSEPM_muonCandidateCut/MyMassPt"]
+            tmpHistMassCoherent = tmpHist.ProjectionX(f"histMassCoherent_run{run}", firstybin=1, lastybin=4)
+            # Calculate yield as pair counts in mass window -- impossible to get fit to every run
+            lowBin = tmpHistMassCoherent.FindBin(2.95)
+            highBin = tmpHistMassCoherent.FindBin(3.25) - 1
+            nCandidates = tmpHistMassCoherent.Integral(lowBin, highBin)
+            listYield.append(nCandidates)
+            nCandidatesError = np.sqrt(nCandidates)
+            listYieldPerEvent.append(nCandidates / tmpHistEvent.GetEntries())
+            listYieldPerEventError.append((nCandidates / tmpHistEvent.GetEntries()) * (nCandidatesError / nCandidates))
+            listYieldPerSelectedEvent.append(nCandidates / tmpHistEventSelected.GetEntries())
+            listYieldPerSelectedEventError.append((nCandidates / tmpHistEventSelected.GetEntries()) * (nCandidatesError / nCandidates))
+            listRun.append(run)
+            listIr.append(rate)
+            listEvents.append(tmpHistEvent.GetEntries())
+            listEventsSelected.append(tmpHistEventSelected.GetEntries())
+            lumi = self.histLumi.GetBinContent(self.histLumi.GetXaxis().FindBin(run))
+            listLumi.append(lumi) 
+            listYieldPerLumi.append(nCandidates / lumi)
+            listYieldPerLumiError.append((nCandidates / lumi) * (nCandidatesError / nCandidates))
+            self.runHists[run] = tmpHistMassCoherent
+            del tmpHistDict
+            del tmpHistEvent
+            del tmpHist
+            del tmpHistMassCoherent
+
+        print(f"Processed the following {len(self.runHists)} runs: {self.runHists.keys()}")
+        self.runDataFrame = pd.DataFrame({
+            "run": listRun,
+            "ir": listIr,
+            "yield": listYield,
+            "nEvents": listEvents,
+            "nEventsSelected": listEventsSelected,
+            "yieldPerEvent": listYieldPerEvent,
+            "yieldPerEventError": listYieldPerEventError,
+            "yieldPerSelectedEvent": listYieldPerSelectedEvent,
+            "yieldPerSelectedEventError": listYieldPerSelectedEventError,
+            "lumi": listLumi,
+            "yieldPerLumi": listYieldPerLumi,
+            "yieldPerLumiError": listYieldPerLumiError
+        })
+        self.runDataFrame = self.runDataFrame.sort_values("ir")
 
 class Efficiency():
     def __init__(self, numeratorTitle, denominatorTitle, histNumerator, histDenominator):
@@ -1086,14 +1380,15 @@ class FactorizedEfficiency():
 class FitResult():
     "All information about the invariant mass fit to a pT bin"
 
-    def __init__(self, lowerMass, upperMass, backgroundName, isNominal=True):
+    def __init__(self, lowerMass, upperMass, backgroundName, binIdx, isNominal=True):
+        self.binIdx = binIdx
         self.isNominal = isNominal
         self.lowerMass = lowerMass
         self.upperMass = upperMass
         self.backgroundName = backgroundName
 
     def create_fit_results(self, reflectedLowerMass, reflectedUpperMass, bin, 
-                           fitFunc, signalFunc, backgroundFunc, dataReflFunc, totalBackgroundFunc,
+                           fitFunc, signalFunc, backgroundFunc, dataReflFunc, corrBkgFunc, totalBackgroundFunc,
                            doPrint=True):
         try:
             self.fitChi2Ndf = fitFunc.GetChisquare() / fitFunc.GetNDF()
@@ -1110,13 +1405,15 @@ class FitResult():
         self.relativeStatError = fitFunc.GetParError(0) / (bin.massPtSlice.GetBinWidth(1) * self.nSignal)
         signalIntegral3Sigma = signalFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
         reflIntegral3Sigma = dataReflFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
-        self.signalToBackground = signalIntegral3Sigma / (self.nCombBackground + reflIntegral3Sigma)
-        self.signalSignificance = signalIntegral3Sigma / np.sqrt(signalIntegral3Sigma + self.nCombBackground + reflIntegral3Sigma)
+        corrIntegral3Sigma = (corrBkgFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)) if corrBkgFunc is not None else 0
+        self.signalToBackground = signalIntegral3Sigma / (self.nCombBackground + reflIntegral3Sigma + corrIntegral3Sigma)
+        self.signalSignificance = signalIntegral3Sigma / np.sqrt(signalIntegral3Sigma + self.nCombBackground + reflIntegral3Sigma + corrIntegral3Sigma)
         if doPrint:
             print(f"bin {bin.index} signal significance and S/B were calculated by integrating the signal and background components from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}, yielding nSig={signalIntegral3Sigma}, nComb={self.nCombBackground}, nReflBackground (3#sigma)={reflIntegral3Sigma}")
         self.fitFunc = fitFunc
         self.signalFunc = signalFunc
         self.backgroundFunc = backgroundFunc
+        self.corrBkgFunc = corrBkgFunc
         self.dataReflFunc = dataReflFunc
         self.totalBackgroundFunc = totalBackgroundFunc
 
@@ -1129,28 +1426,29 @@ class PtBin():
         self.upperPt = upperPt
         # Array to hold systematic fit variation results
         self.fitResults = []
+        if self.lowerPt >= 6.:
+            self.invMassRebin = 2
+        else:
+            self.invMassRebin = 1
 
-    def draw(self):
-        if hasattr(self, 'canvas'):
-            del self.canvas
-        self.canvas = r.TCanvas(f"canvasPtBin{self.index}", f"canvasPtBin{self.index}")
-        self.massPtSlice.Draw("E")
-        self.massPtSlice.SetStats(0)
+    def draw(self, createCanvas=True):
+        if createCanvas:
+            if hasattr(self, 'canvas'):
+                del self.canvas
+            self.canvas = r.TCanvas(f"canvasPtBin{self.index}", f"canvasPtBin{self.index}")
         if hasattr(self, 'nominalFitResult'):
-            self.nominalFitResult.fitFunc.Draw("same")
+            self.legend = r.TLegend(0.15, 0.15, 0.4, 0.3)
+            self.nominalFitResult.fitFunc.Draw()
+            self.legend.AddEntry(self.nominalFitResult.fitFunc, "Total fit function")
+            self.nominalFitResult.signalFunc.Draw("same LF2")
+            self.legend.AddEntry(self.nominalFitResult.signalFunc, "Signal")
             self.nominalFitResult.backgroundFunc.Draw("same")
-            self.nominalFitResult.totalBackgroundFunc.Draw("same")
+            self.legend.AddEntry(self.nominalFitResult.backgroundFunc, f"Comb. background ({self.nominalFitResult.backgroundName})")
+            if self.nominalFitResult.corrBkgFunc is not None:
+                self.nominalFitResult.corrBkgFunc.Draw("same")
+                self.legend.AddEntry(self.nominalFitResult.corrBkgFunc, "D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}")
+            # self.nominalFitResult.totalBackgroundFunc.Draw("same")
             # Text box with info
-            self.backgroundText = r.TPaveText(0.15, 0.15, 0.50, 0.20, "NDC")
-            self.backgroundText.SetName(f"backgroundText_pTbin{self.index}")
-            self.backgroundText.SetFillColor(0)
-            self.backgroundText.SetFillStyle(0)
-            self.backgroundText.SetBorderSize(0)
-            self.backgroundText.SetTextAlign(12)
-            self.backgroundText.SetTextFont(42)
-            self.backgroundText.SetTextSize(0.04)
-            self.backgroundText.AddText(self.nominalFitResult.backgroundName)
-            self.backgroundText.Draw()
             self.textBox = r.TPaveText(0.65, 0.5, 0.95, 0.85, "NDC")
             self.textBox.SetName(f"textbox_pTbin{self.index}")
             self.textBox.SetFillColor(0)
@@ -1160,7 +1458,7 @@ class PtBin():
             self.textBox.SetTextFont(42)
             self.textBox.SetTextSize(0.04)
             self.textBox.AddText(f"#mu = {self.nominalFitResult.fitMu:.3f}")
-            self.textBox.AddText(f"#sigma = {self.nominalFitResult.fitSigma:.3f}")
+            self.textBox.AddText(f"#sigma = {self.nominalFitResult.fitSigma:.4f}")
             self.textBox.AddText(f"S = {self.nominalFitResult.nSignal:.3f}")
             self.textBox.AddText(f"S/B (3#sigma)= {self.nominalFitResult.signalToBackground:.3f}")
             self.textBox.AddText(f"S/#sqrt{{S+B}} = {self.nominalFitResult.signalSignificance:.3f}")
@@ -1178,21 +1476,220 @@ class PtBin():
             self.lineFitrangeHigh.SetLineStyle(2)
             self.lineFitrangeHigh.SetLineWidth(1)
             self.lineFitrangeHigh.Draw()
-        self.canvas.Draw()
+            self.massPtSlice.Draw("same E")
+            self.massPtSlice.SetStats(0)
+        else:
+            self.massPtSlice.Draw("E")
+            self.massPtSlice.SetStats(0)
+        if createCanvas:
+            self.canvas.Draw()
         
+    def draw_reflected_fit(self, createCanvas=True):
+        if createCanvas:
+            if hasattr(self, 'canvasReflFit'):
+                del self.canvasReflFit
+            self.canvasReflFit = r.TCanvas("canvasReflFit", "canvasReflFit", 400, 333)
+            self.canvasReflFit.cd()
+
+        self.massPtSliceReflected.Draw("E")
+        self.massPtSliceReflected.SetStats(0)
+        self.reflFunc1 = r.TF1(f"fReflGauss1_bin{self.index}", fit_functions.signal, 1.3, 2.3, 3)
+        self.reflFunc1.SetParameters(np.array([self.reflFunc.GetParameter(0) * self.reflFunc.GetParameter(1),
+                                              self.reflFunc.GetParameter(2), self.reflFunc.GetParameter(3)], dtype='d'))
+        self.reflFunc1.SetLineColor(r.kGreen)
+        self.reflFunc1.SetLineStyle(r.kDashed)
+        self.reflFunc1.Draw("same")
+        self.reflFunc2 = r.TF1(f"fReflGauss2_bin{self.index}", fit_functions.signal, 1.3, 2.3, 3)
+        self.reflFunc2.SetParameters(np.array([self.reflFunc.GetParameter(0) * (1 - self.reflFunc.GetParameter(1)),
+                                              self.reflFunc.GetParameter(4), self.reflFunc.GetParameter(5)], dtype='d'))
+        self.reflFunc2.SetLineColor(r.kMagenta)
+        self.reflFunc2.SetLineStyle(r.kDashed)
+        self.reflFunc2.Draw("same")
+        self.reflFunc.SetLineColor(r.kRed)
+        self.reflFunc.Draw("same")
+        # Text box with info
+        self.textBoxReflected = r.TPaveText(0.6, 0.4, 1., 0.9, "NDC")
+        self.textBoxReflected.SetName(f"textboxreflected_bin{self.index}")
+        self.textBoxReflected.SetFillColor(0)
+        self.textBoxReflected.SetFillStyle(0)
+        self.textBoxReflected.SetBorderSize(0)
+        self.textBoxReflected.SetTextAlign(12)
+        self.textBoxReflected.SetTextFont(42)
+        self.textBoxReflected.SetTextSize(0.035)
+        self.textBoxReflected.AddText(f"Refl/S = {self.reflectedRatio:.3f}")
+        self.textBoxReflected.AddText(f"Integral = {self.reflFunc.GetParameter('Integral'):.3f}")
+        self.textBoxReflected.AddText(f"RelNorm = {self.reflFunc.GetParameter('RelNorm'):.3f}")
+        self.textBoxReflected.AddText(f"Mean1 = {self.reflFunc.GetParameter('Mean1'):.3f}")
+        self.textBoxReflected.AddText(f"Sigma1 = {self.reflFunc.GetParameter('Sigma1'):.3f}")
+        self.textBoxReflected.AddText(f"Mean2 = {self.reflFunc.GetParameter('Mean2'):.3f}")
+        self.textBoxReflected.AddText(f"Sigma2 = {self.reflFunc.GetParameter('Sigma2'):.3f}")
+        self.textBoxReflected.Draw()
+
+        if createCanvas:
+            self.canvasReflFits.Draw()
+
+    def draw_systematic_fit_variations(self, showFits=False):
+        if showFits:
+            nCols = 5
+            nPanels = len(self.fitResults) + 3
+            nRows = int(np.ceil(nPanels/nCols))
+        else:
+            nCols = 3
+            nRows = 1
+        if hasattr(self, 'canvasSystematicFitVariations'):
+            del self.canvasSystematicFitVariations
+        self.canvasSystematicFitVariations = r.TCanvas("canvasSystematicFitVariations", "canvasSystematicFitVariations", nCols * 400, nRows * 333)
+        self.canvasSystematicFitVariations.Divide(nCols, nRows, 0.002, 0.01)
+        
+        self.histSystematicYieldDistribution = r.TH1D("histSystematicYieldDistribution", f"{self.lowerPt} < p_{{T}} < {self.upperPt} GeV/c", 300, 0, 2*self.nominalFitResult.nSignal)
+        self.histSystematicYieldDistribution.GetXaxis().SetTitle("Raw yield")
+        self.histSystematicYieldDistribution.GetYaxis().SetTitle("Counts")
+        self.histSystematicYieldVsTrial = r.TH1D("histSystematicYieldVsTrial", f"{self.lowerPt} < p_{{T}} < {self.upperPt} GeV/c", len(self.fitResults), 0, len(self.fitResults))
+        self.histSystematicYieldVsTrial.GetXaxis().SetTitle("Trial")
+        self.histSystematicYieldVsTrial.GetYaxis().SetTitle("Raw yield")
+        self.histSystematicChi2ndfVsTrial = r.TH1D("histSystematicChi2ndfVsTrial", f"{self.lowerPt} < p_{{T}} < {self.upperPt} GeV/c", len(self.fitResults), 0, len(self.fitResults))
+        self.histSystematicChi2ndfVsTrial.GetXaxis().SetTitle("Trial")
+        self.histSystematicChi2ndfVsTrial.GetYaxis().SetTitle("#chi^{2}/ndf")
+        self.textBoxesSystematicVariations = []
+        self.linesFitrangeLow = []
+        self.linesFitrangeHigh = []
+        panelIndex = 1
+        for i, fitResult in enumerate(self.fitResults):
+            self.histSystematicYieldDistribution.Fill(fitResult.nSignal)
+            self.histSystematicYieldVsTrial.SetBinContent(i+1, fitResult.nSignal)
+            self.histSystematicYieldVsTrial.SetBinError(i+1, fitResult.nSignal*fitResult.relativeStatError)
+            self.histSystematicChi2ndfVsTrial.SetBinContent(i+1, fitResult.fitChi2Ndf)
+            if showFits:
+                self.canvasSystematicFitVariations.cd(panelIndex)
+                self.massPtSlice.Draw("E")
+                self.massPtSlice.SetStats(0)
+                fitResult.fitFunc.Draw("same")
+                fitResult.backgroundFunc.Draw("same")
+                fitResult.totalBackgroundFunc.Draw("same")
+                # Text box with info
+                self.textBoxesSystematicVariations.append(r.TPaveText(0.6, 0.5, 0.9, 0.85, "NDC"))
+                self.textBoxesSystematicVariations[i].SetName(f"textbox_trial{i+1}")
+                self.textBoxesSystematicVariations[i].SetFillColor(0)
+                self.textBoxesSystematicVariations[i].SetFillStyle(0)
+                self.textBoxesSystematicVariations[i].SetBorderSize(0)
+                self.textBoxesSystematicVariations[i].SetTextAlign(12)
+                self.textBoxesSystematicVariations[i].SetTextFont(42)
+                self.textBoxesSystematicVariations[i].SetTextSize(0.04)
+                self.textBoxesSystematicVariations[i].AddText(f"background: {fitResult.backgroundName}")
+                self.textBoxesSystematicVariations[i].AddText(f"fit range: [{fitResult.lowerMass:.2f}, {fitResult.upperMass:.2f}]")
+                self.textBoxesSystematicVariations[i].AddText(f"#mu = {fitResult.fitMu:.3f}")
+                self.textBoxesSystematicVariations[i].AddText(f"#sigma = {fitResult.fitSigma:.3f}")
+                self.textBoxesSystematicVariations[i].AddText(f"Refl/S = {fitResult.nReflBackground/fitResult.nSignal:.3f}")
+                self.textBoxesSystematicVariations[i].AddText(f"S = {fitResult.nSignal:.3f}")
+                self.textBoxesSystematicVariations[i].AddText(f"#chi^{{2}}/ndf = {fitResult.fitChi2Ndf:.3f}")
+                self.textBoxesSystematicVariations[i].Draw()
+                # Lines to show fitting range
+                self.linesFitrangeLow.append(r.TLine(fitResult.lowerMass, r.gPad.GetUymin(), fitResult.lowerMass, r.gPad.GetUymax()))
+                self.linesFitrangeLow[i].SetLineColor(r.kBlack)
+                self.linesFitrangeLow[i].SetLineStyle(2)
+                self.linesFitrangeLow[i].SetLineWidth(1)
+                self.linesFitrangeLow[i].Draw()
+                self.linesFitrangeHigh.append(r.TLine(fitResult.upperMass, r.gPad.GetUymin(), fitResult.upperMass, r.gPad.GetUymax()))
+                self.linesFitrangeHigh[i].SetLineColor(r.kBlack)
+                self.linesFitrangeHigh[i].SetLineStyle(2)
+                self.linesFitrangeHigh[i].SetLineWidth(1)
+                self.linesFitrangeHigh[i].Draw()
+                panelIndex += 1
+        self.canvasSystematicFitVariations.cd(panelIndex)
+        self.histSystematicYieldVsTrial.Draw("E")
+        self.lineNominalYield = r.TLine(self.histSystematicYieldVsTrial.GetXaxis().GetXmin(), self.nominalFitResult.nSignal, self.histSystematicYieldVsTrial.GetXaxis().GetXmax(), self.nominalFitResult.nSignal)
+        self.lineNominalYield.SetLineColor(r.kRed)
+        self.lineNominalYield.SetLineStyle(2)
+        self.lineNominalYield.SetLineWidth(2)
+        self.lineNominalYield.Draw('same')
+        self.canvasSystematicFitVariations.cd(panelIndex+1)
+        self.histSystematicChi2ndfVsTrial.SetMarkerStyle(20)
+        self.histSystematicChi2ndfVsTrial.Draw("P")
+        self.lineNominalChi2ndf = r.TLine(self.histSystematicChi2ndfVsTrial.GetXaxis().GetXmin(), self.nominalFitResult.fitChi2Ndf, self.histSystematicChi2ndfVsTrial.GetXaxis().GetXmax(), self.nominalFitResult.fitChi2Ndf)
+        self.lineNominalChi2ndf.SetLineColor(r.kRed)
+        self.lineNominalChi2ndf.SetLineStyle(2)
+        self.lineNominalChi2ndf.SetLineWidth(2)
+        self.lineNominalChi2ndf.Draw('same')
+        self.canvasSystematicFitVariations.cd(panelIndex+2)
+        self.histSystematicYieldDistribution.Draw("hist")
+        self.textBoxRmsOverMean = r.TPaveText(0.6, 0.5, 0.9, 0.6, "NDC")
+        self.textBoxRmsOverMean.AddText(f"RMS/#mu = {100*self.histSystematicYieldDistribution.GetRMS()/self.histSystematicYieldDistribution.GetMean():.2f}%")
+        self.textBoxRmsOverMean.Draw()
+        self.textBoxRmsOverMean.SetFillColor(0)
+        self.textBoxRmsOverMean.SetFillStyle(0)
+        self.textBoxRmsOverMean.SetBorderSize(0)
+        self.textBoxRmsOverMean.SetTextAlign(12)
+        self.textBoxRmsOverMean.SetTextFont(42)
+        self.textBoxRmsOverMean.SetTextSize(0.04)
+        self.canvasSystematicFitVariations.Draw()
+        self.lineNominalYieldVert = r.TLine(self.nominalFitResult.nSignal, r.gPad.GetUymin(), self.nominalFitResult.nSignal, r.gPad.GetUymax())
+        self.lineNominalYieldVert.SetLineColor(r.kRed)
+        self.lineNominalYieldVert.SetLineStyle(2)
+        self.lineNominalYieldVert.SetLineWidth(2)
+        self.lineNominalYieldVert.Draw('same')
+
+    def draw_fit_result(self, index):
+        if hasattr(self, 'canvasFitResult'):
+            del self.canvasFitResult
+        self.canvasFitResult = r.TCanvas(f"canvasPtBin{self.index}FitResult", f"canvasPtBin{self.index}FitResult")
+        self.fitResults[index].legend = r.TLegend(0.15, 0.15, 0.4, 0.3)
+        self.fitResults[index].fitFunc.Draw()
+        self.fitResults[index].legend.AddEntry(self.fitResults[index].fitFunc, "Total fit function")
+        self.fitResults[index].signalFunc.Draw("same LF2")
+        self.fitResults[index].legend.AddEntry(self.fitResults[index].signalFunc, "Signal")
+        self.fitResults[index].backgroundFunc.Draw("same")
+        self.fitResults[index].legend.AddEntry(self.fitResults[index].backgroundFunc, f"Comb. background ({self.fitResults[index].backgroundName})")
+        if self.fitResults[index].corrBkgFunc is not None:
+            self.fitResults[index].corrBkgFunc.Draw("same")
+            self.fitResults[index].legend.AddEntry(self.fitResults[index].corrBkgFunc, "D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}")
+        self.fitResults[index].totalBackgroundFunc.Draw("same")
+        # Text box with info
+        self.fitResults[index].textBox = r.TPaveText(0.65, 0.5, 0.95, 0.85, "NDC")
+        self.fitResults[index].textBox.SetName(f"textbox_pTbin{self.index}FitResult")
+        self.fitResults[index].textBox.SetFillColor(0)
+        self.fitResults[index].textBox.SetFillStyle(0)
+        self.fitResults[index].textBox.SetBorderSize(0)
+        self.fitResults[index].textBox.SetTextAlign(12)
+        self.fitResults[index].textBox.SetTextFont(42)
+        self.fitResults[index].textBox.SetTextSize(0.04)
+        self.fitResults[index].textBox.AddText(f"#mu = {self.fitResults[index].fitMu:.3f}")
+        self.fitResults[index].textBox.AddText(f"#sigma = {self.fitResults[index].fitSigma:.4f}")
+        self.fitResults[index].textBox.AddText(f"S = {self.fitResults[index].nSignal:.3f}")
+        self.fitResults[index].textBox.AddText(f"S/B (3#sigma)= {self.fitResults[index].signalToBackground:.3f}")
+        self.fitResults[index].textBox.AddText(f"S/#sqrt{{S+B}} = {self.fitResults[index].signalSignificance:.3f}")
+        self.fitResults[index].textBox.AddText(f"Refl/S = {self.fitResults[index].nReflBackground/self.fitResults[index].nSignal:.3f}")
+        self.fitResults[index].textBox.AddText(f"#chi^{{2}}/ndf = {self.fitResults[index].fitChi2Ndf:.3f}")
+        self.fitResults[index].textBox.Draw()
+        # Lines to show fitting range
+        self.fitResults[index].lineFitrangeLow = r.TLine(self.fitResults[index].lowerMass, r.gPad.GetUymin(), self.fitResults[index].lowerMass, r.gPad.GetUymax())
+        self.fitResults[index].lineFitrangeLow.SetLineColor(r.kBlack)
+        self.fitResults[index].lineFitrangeLow.SetLineStyle(2)
+        self.fitResults[index].lineFitrangeLow.SetLineWidth(1)
+        self.fitResults[index].lineFitrangeLow.Draw()
+        self.fitResults[index].lineFitrangeHigh = r.TLine(self.fitResults[index].upperMass, r.gPad.GetUymin(), self.fitResults[index].upperMass, r.gPad.GetUymax())
+        self.fitResults[index].lineFitrangeHigh.SetLineColor(r.kBlack)
+        self.fitResults[index].lineFitrangeHigh.SetLineStyle(2)
+        self.fitResults[index].lineFitrangeHigh.SetLineWidth(1)
+        self.fitResults[index].lineFitrangeHigh.Draw()
+        self.massPtSlice.Draw("same E")
+        self.massPtSlice.SetStats(0)
+        self.canvasFitResult.Draw()
+        
+
 class Analysis():
     """Class containing everything needed to calculate a D0 cross section from O2Physics output"""
 
-    def __init__(self, pathTableMaker, dirData, dirRec, dirGen, dirRefl = None,
-                 ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, 
-                 hLumiPath=['eventselection-run3', 'luminosity', 'hLumiTCEafterBCcuts'], 
+    def __init__(self, pathTableMaker, dirData, dirMc, dirGen = None, dirRefl = None,
+                 ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], rapidityRange = [-0.9, 0.9],
+                 runList = None, hLumiPath=['eventselection-run3', 'luminosity', 'hLumiTCEafterBCcuts'], 
                  dataFileStructure=FileStructures.FLAT,
                  recFileStructure=FileStructures.FLAT,
                  genFileStructure=FileStructures.FLAT,
                  rapidityGapSelectionEfficiency = None,
+                 pathHfTree = '/media/sigurd/T7/mc/HF_LHC25e4_All/train586890/mergedAO2D.root',
                  **kwargs):
         # The runList defines which files are looped over in run-by-run calculations
-        self.runList = runList if runList is not None else DEFAULT_RUNLIST.copy()
+        self.runList = runList if runList is not None else DEFAULT_RUNLIST_PASS4.copy()
         self.runList = sorted(self.runList)
         print(f"This analysis contains {len(self.runList)} runs")
 
@@ -1202,9 +1699,10 @@ class Analysis():
         self.check_file_for_runs(self.fileTableMaker, self.hLumiPath)
 
         self.dirData = dirData
-        self.dirRec = dirRec
+        self.dirRec = dirMc
         self.dirGen = dirGen
         self.dirRefl = dirRefl
+        self.pathHfTree = pathHfTree
 
         # Get default cut names, replace if specified in construction
         cutNames = {
@@ -1221,9 +1719,9 @@ class Analysis():
         self.ptBins = []
         for i in range(len(self.ptBinsArray) - 1):
             self.ptBins.append(PtBin(i, self.ptBinsArray[i], self.ptBinsArray[i+1]))
-        # Range of rapidity bin to be used
-        self.minY = -0.9
-        self.maxY = 0.9
+        # Range of rapidity bin to be used (fiducial acceptance cut)
+        self.minY = rapidityRange[0]
+        self.maxY = rapidityRange[1]
         # Get the mass histograms needed for the signal extraction
         self.dataFileStructure = dataFileStructure
         self.recFileStructure = recFileStructure
@@ -1271,7 +1769,7 @@ class Analysis():
                 lumiReduction = lumiThisRun * (1 - correctionFactor)
                 print(f"\nRun {run} ({lumiThisRun:.2f} 1/µb): Only {100 * correctionFactor:.3f}% of events included. Reducing the analysis luminosity by {lumiReduction:.3f} 1/µb")
                 self.lumi -= lumiReduction
-        print(f"Done! New lumi = {self.lumi:.2f} 1/µb")
+        print(f"Done! New lumi = {self.lumi:.2f} 1/µb           ")
 
     def check_file_for_runs(self, file, strings):
         if len(strings) == 3:
@@ -1303,74 +1801,102 @@ class Analysis():
         if len(self.hLumiPath) == 3:
             self.histLumi = self.histLumi.Get(self.hLumiPath[2])
 
-        # Obtain the main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
+        # --- Define lists of histogram names ---
+        # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
         fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
         fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
         fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
         fullNamesGen.append(fullNameHistD0PtYGenerated)
-        self.dictGenHists = get_histograms(self.dirGen, self.runList, fullNamesGen, histogramNamesfileStructure=self.genFileStructure)
+        # Data histograms
+        fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtHisto"
+        fullNameHistD0MassPtY = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtYHisto"
+        fullNameHistD0MassPtIsGap = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtIsGapHisto"
+        fullNameHistMultiDimA = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapAHisto"
+        fullNameHistMultiDimC = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapCHisto"
+        fullNameHistEventAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxZ"
+        # Main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
+        fullNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
+        fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Y_PtFine" for fullNameRec in fullNamesMc]
+        groupNameD0Matched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched
+        fullNameHistD0YPtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Y_PtFine"
+        fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
+        fullNamesMc.append(fullNameHistD0YPtMatched)
+        fullNameHistD0MassPtReflected = "analysis-asymmetric-pairing/output;1/" + f"{self.groupNameD0PtMatched}Reflected" + "/MyMassPtHisto"
+
+        # Get the histograms from the AnalysisResults.root files
+        self.dictMcHists = {}
+        if self.dirGen is not None:
+            self.dictGenHists = get_histograms(self.dirGen, self.runList, fullNamesGen, histogramNamesfileStructure=self.genFileStructure)
+            print("INFO: Separate directory for MC files with generator lvl. histograms was specified")
+        else:
+            fullNamesMc += fullNamesGen
+            self.dictGenHists = self.dictMcHists
+
+        if self.dirRefl is not None:
+            # Get the reflected histogram (and the reference not reflected histogram) from a separate file
+            print("INFO: Separate directory for MC files with reflected histogram was specified")
+            dictReflHist = get_histograms(self.dirRefl, self.runList, [fullNameHistD0MassPtReflected, fullNameHistD0PtMatched], histogramNamesfileStructure=self.recFileStructure)
+        else:
+            fullNamesMc.append(fullNameHistD0MassPtReflected)
+            fullNamesMc.append(fullNameHistD0PtMatched)
+            dictReflHist = self.dictMcHists
+
+        # This dict always contains reco lvl. histograms, sometimes the reflected histogram, sometimes the gen lvl. histograms
+        self.dictMcHists.update(get_histograms(self.dirRec, self.runList, fullNamesMc, histogramNamesfileStructure=self.recFileStructure))
+        self.dictRecHists = self.dictMcHists
+
+        # Fetch the histograms from the dicts
+        # TODO: In principle these should also be projected inside the fiducial rapidity cut, but it will be a small effect
+        self.histD0MassPtReflected = dictReflHist[fullNameHistD0MassPtReflected]
+        self.histD0PtNotReflected = dictReflHist[fullNameHistD0PtMatched]
+
+        self.histD0YPtMatched = self.dictRecHists[fullNameHistD0YPtMatched]
+        self.histD0PtMatched = project_fiducial_acceptance(self.histD0YPtMatched, self.minY, self.maxY)
+        self.histD0PtMatched.SetName("histD0PtMatched")
+        self.histD0PtMatched.SetTitle(f"Reconstructed, matched D0 in {self.minY:.1f} < y < {self.maxY:.1f}")
+
         self.histD0PtYGenerated = self.dictGenHists[fullNameHistD0PtYGenerated]
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenerated = self.histD0PtYGenerated.ProjectionX(f"projPtMcGen_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
-        self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY} < y < {self.maxY}")
-        # Data histograms
-        fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtHisto"
-        fullNameHistD0MassPtIsGap = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtIsGapHisto"
-        fullNameHistMultiDimA = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapAHisto"
-        fullNameHistMultiDimC = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapCHisto"
-        fullNameHistEventAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxZ"
-        tmpDict = get_histograms(self.dirData, self.runList, [fullNameHistD0MassPt, fullNameHistD0MassPtIsGap, fullNameHistEventAfterCuts, fullNameHistMultiDimA, fullNameHistMultiDimC], histogramNamesfileStructure=self.dataFileStructure)
+        self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY:.1f} < y < {self.maxY:.1f}")
+
+        # Get data histograms
+        tmpDict = get_histograms(self.dirData, self.runList, [fullNameHistD0MassPt, fullNameHistD0MassPtY, fullNameHistD0MassPtIsGap, fullNameHistEventAfterCuts, fullNameHistMultiDimA, fullNameHistMultiDimC], histogramNamesfileStructure=self.dataFileStructure)
         try:
-            self.histD0MassPt = tmpDict[fullNameHistD0MassPt]
+            self.histD0MassPtY = tmpDict[fullNameHistD0MassPtY]
+            self.histD0MassPtY.GetZaxis().SetRangeUser(self.minY, self.maxY)
+            self.histD0MassPt = self.histD0MassPtY.Project3D('yx') # x: mass, y: pT
         except:
-            hist3d = tmpDict[fullNameHistD0MassPtIsGap]
-            self.histD0MassPt = hist3d.Project3D('yx')
-            del hist3d
+            if (self.minY == -0.9 and self.maxY == 0.9):
+                print("INFO: Did not find data mass vs pT vs y histogram, but rapidity range is [-0.9, 0.9]. Falling back to mass vs pT or mass vs pT vs IsGap histogram")
+                try:
+                    self.histD0MassPt = tmpDict[fullNameHistD0MassPt]
+                except:
+                    hist3d = tmpDict[fullNameHistD0MassPtIsGap]
+                    self.histD0MassPt = hist3d.Project3D('yx')
+                    del hist3d
+            else:
+                raise Exception(f"Unable to find suitable histogram in data to make projection in rapidity!")
+
+
         self.histEventAfterCuts = tmpDict[fullNameHistEventAfterCuts]
         self.nEvents = self.histEventAfterCuts.GetEntries()
         del tmpDict
-        # Obtain the main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
-        fullNamesRec = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
-        fullNamesRec = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Pt" for fullNameRec in fullNamesRec]
-        fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
-        fullNamesRec.append(fullNameHistD0PtMatched)
-        fullNameHistD0MassPtReflected = "analysis-asymmetric-pairing/output;1/" + f"{self.groupNameD0PtMatched}Reflected" + "/MyMassPtHisto"
-        if self.dirRefl is None:
-            # Get the reflected histogram (and the reference not reflected histogram) from the same file as we use for matched histograms for efficiencies
-            fullNamesRec.append(fullNameHistD0MassPtReflected)
-            self.dictRecHists = get_histograms(self.dirRec, self.runList, fullNamesRec, histogramNamesfileStructure=self.recFileStructure)
-            self.histD0MassPtReflected = self.dictRecHists[fullNameHistD0MassPtReflected]
-            self.histD0PtNotReflected = self.dictRecHists[fullNameHistD0PtMatched]
-        else:
-            # Get the reflected histogram (and the reference not reflected histogram) from a separate file
-            self.dictRecHists = get_histograms(self.dirRec, self.runList, fullNamesRec, histogramNamesfileStructure=self.recFileStructure)
-            print("INFO: Separate directory for MC files with reflected histogram was specified")
-            dictReflHist = get_histograms(self.dirRefl, self.runList, [fullNameHistD0MassPtReflected, fullNameHistD0PtMatched], histogramNamesfileStructure=self.recFileStructure)
-            self.histD0MassPtReflected = dictReflHist[fullNameHistD0MassPtReflected]
-            self.histD0PtNotReflected = dictReflHist[fullNameHistD0PtMatched]
-        self.histD0PtMatched = self.dictRecHists[fullNameHistD0PtMatched]
-        self.histD0PtMatched.SetName("histD0PtMatched")
-        self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
 
-        binWidth = 0.005
+        # Get info and histograms belonging to the pT bins in the analysis 
         for i, bin in enumerate(self.ptBins):
             # Create an array of slices of the mass vs pT histogram and the MC reflected mass vs pT histogram
             lowerBin = self.histD0MassPt.GetYaxis().FindBin(bin.lowerPt)
             upperBin = self.histD0MassPt.GetYaxis().FindBin(bin.upperPt) - 1
             hProjectionMass = self.histD0MassPt.ProjectionX(f"projMass_{bin.lowerPt}_{bin.upperPt}", firstybin=lowerBin, lastybin=upperBin)
-            currentBinWidth = hProjectionMass.GetBinWidth(1)
-            if binWidth % currentBinWidth == 0:
-                groupSize = int(binWidth / currentBinWidth)
-                hProjectionMass.Rebin(groupSize)
-            else:
-                print(f"WARNING: Impossible to rebin invariant mass histogram to the bin width {binWidth} GeV/c^2. Keeping the current bin width of {currentBinWidth} GeV/c^2.")
+            hProjectionMass.Rebin(bin.invMassRebin)
             hProjectionMass.SetTitle(f"Kpi invariant mass, {bin.lowerPt} <= pT < {bin.upperPt} GeV/c")
             bin.massPtSlice = hProjectionMass
 
             hProjectionMassReflected = self.histD0MassPtReflected.ProjectionX(f"projMassMcReflected_{bin.lowerPt}_{bin.upperPt}", firstybin=lowerBin, lastybin=upperBin)
-            hProjectionMassReflected.Rebin(2)
+            hProjectionMassReflected.Rebin(8)
             hProjectionMassReflected.SetTitle(f"MC matched reflected Kpi invariant mass, {bin.lowerPt} <= pT < {bin.upperPt} GeV/c")
             bin.massPtSliceReflected = hProjectionMassReflected
 
@@ -1380,17 +1906,55 @@ class Analysis():
             bin.nMatched = self.histD0PtMatched.Integral(matchedLowerBin, matchedUpperBin)
             bin.nNotReflected = self.histD0PtNotReflected.Integral(matchedLowerBin, matchedUpperBin)
 
-    """
-    def systematic_fit_variation(self, bin, backgroundName, lowers, uppers):
-        for lower in lowers:
-            for upper in uppers:
-                self.fit_inv_mass(bin, backgroundName, fitRange=[lower, upper], doPrint=False, isNominal=False)
-                print(f"Fit range [{lower}, {upper}]: S = {self.ptBins[bin].fitResults[-1].nSignal}, B = {self.ptBins[bin].fitResults[-1].nBackground}")
-    """
+    def systematic_fit_variation(self, bin, backgroundDict, lowers, uppers, signalMuRange, signalSigmaRange, useCorrBkgTemplate=False, maxChi2=2.0, doPrint=False):
+        if len(self.ptBins[bin].fitResults) != 0:
+            print(f"WARNING: This bin already has {len(self.ptBins[bin].fitResults)}, these will now be overwritten!")
+            self.ptBins[bin].fitResults = []
+        reflRatioFactors = [1.0, 0.9, 1.1]
+        signalWidthFactors = [1.0, 0.95, 1.05]
+        nTrials = len(backgroundDict) * len(lowers) * len(uppers) * len(reflRatioFactors) * len(signalWidthFactors)
+        counter = 0
+        for backgroundFunction, initialParams in backgroundDict.items():
+            for lower in lowers:
+                for upper in uppers:
+                    for reflRatioFactor in reflRatioFactors:
+                        for signalWidthFactor in signalWidthFactors:
+                            counter += 1
+                            infoString = ""
+                            infoString += f"Trial {counter}/{nTrials}: "
+                            if signalWidthFactor != 1.0:
+                                sigma = sigmaFree * signalWidthFactor 
+                                infoString += f"Fixing sigma = {sigma:.3f}, "
+                            else:
+                                sigma = None
+                                infoString += "Free sigma, "
+                            if (lower == self.ptBins[bin].nominalFitResult.lowerMass and
+                                upper == self.ptBins[bin].nominalFitResult.upperMass and
+                                backgroundFunction.__name__ == self.ptBins[bin].nominalFitResult.backgroundName and
+                                reflRatioFactor == 1.0 and signalWidthFactor == 1.0):
+                                # This is the nominal result, skip it
+                                print("This is the nominal settings, skipping!                                                                                                              ", end='\r')
+                                continue
+                            infoString += f"{backgroundFunction.__name__}, fit range [{lower}, {upper}], reflRatio factor = {reflRatioFactor}, "
+                            fitResult = self.fit_inv_mass(bin, backgroundFunction, fitRange=[lower, upper], doPrint=doPrint, isNominal=False, 
+                                                          signalMuRange=signalMuRange, signalSigma=sigma, signalSigmaRange=signalSigmaRange,
+                                                          backgroundInitialParams=initialParams, reflRatioFactor=reflRatioFactor, useCorrBkgTemplate=useCorrBkgTemplate)
+                            infoString += f"S = {fitResult.nSignal:.3f}, chi2/ndf = {fitResult.fitChi2Ndf:.3f}, "
+                            # If this was the 'free' sigma case, save the sigma as reference for the +-5% variations
+                            if signalWidthFactor == 1.0:
+                                sigmaFree = fitResult.fitSigma
+                            if fitResult.fitChi2Ndf > maxChi2:
+                                infoString += f"chi2/ndf > {maxChi2}, trial rejected!              "
+                            else:
+                                self.ptBins[bin].fitResults.append(fitResult)
+                                infoString += f"Trial saved!                                       "
+                            print(infoString, end='\r')
+        print(f"{nTrials} trials done!                                                                                                                                                                        ")
 
-    def fit_reflected(self, bin, doPrint=True):
+    def fit_reflected(self, bin, fitResult, doPrint=True):
         # Fit the reflected MC histogram with a double Gaussian
         reflFunc = r.TF1(f"fDoubleGauss_bin{bin}", fit_functions.reflected_background, self.massRange[0], self.massRange[1], 6)
+        reflFunc.SetNpx(1000)
         reflFunc.SetParameters(1, 0.5, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2, self.ptBins[bin].massPtSliceReflected.GetMean(), self.ptBins[bin].massPtSliceReflected.GetRMS()/2)
         reflFunc.SetParNames("Integral", "RelNorm", "Mean1", "Sigma1", "Mean2", "Sigma2")
         # Require the integral to be positive
@@ -1400,41 +1964,58 @@ class Analysis():
         # Require reasonable peak positions and widths for the Gaussians
         reflFunc.SetParLimits(2, self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmin(), self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmax())
         reflFunc.SetParLimits(4, self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmin(), self.ptBins[bin].massPtSliceReflected.GetXaxis().GetXmax())
-        reflFunc.SetParLimits(3, 0, 0.2)
-        reflFunc.SetParLimits(5, 0, 0.2)
+        reflFunc.SetParLimits(3, 0.001, 0.1)
+        reflFunc.SetParLimits(5, 0.001, 0.1)
         if doPrint:
             print("---- Fitting MC matched, reflected ----")
-        self.ptBins[bin].massPtSliceReflected.Fit(reflFunc, "LR0" + ("Q" if not doPrint else ""))
+        fitResult.resultReflected = self.ptBins[bin].massPtSliceReflected.Fit(reflFunc, "LESR0" + ("Q" if not doPrint else ""))
         self.ptBins[bin].reflFunc = reflFunc
 
         self.ptBins[bin].reflectedRatio = self.ptBins[bin].massPtSliceReflected.GetEntries() / self.ptBins[bin].nNotReflected
 
     def fit_inv_mass(self, bin, backgroundFunction, fitRange = [1.64, 2.08], doPrint=True, isNominal=True, 
-                     signalMuRange=None, signalSigmaRange=None,    
+                     signalMuRange=None, signalSigmaRange=None, signalSigma=None,
                      backgroundInitialParams=None,
                      simpleFitInitialParams=[100, 1.85, 0.015, 100, 0],
                      simpleFitRange=[1.75, 1.98],
-                     shadowRange=[1.8, 1.9]):
+                     shadowRange=[1.8, 1.9],
+                     useCorrBkgTemplate=False,
+                     reflRatioFactor=1.0):
         # Create the results object to save info on this fit
-        fitResult = FitResult(fitRange[0], fitRange[1], backgroundFunction.__name__)
+        fitResult = FitResult(fitRange[0], fitRange[1], backgroundFunction.__name__, bin)
         if doPrint:
             print(f"====== Fitting bin {bin} ({self.ptBins[bin].lowerPt} < pT < {self.ptBins[bin].upperPt} GeV/c) ======")
 
         # Do the fit to the MC reflected background if needed
         if not hasattr(self.ptBins[bin], 'reflectedRatio'):
-            self.fit_reflected(bin, doPrint)
+            self.fit_reflected(bin, fitResult, doPrint)
         reflFunc = self.ptBins[bin].reflFunc
-        print(f"Using reflectedRatio={self.ptBins[bin].reflectedRatio} in fit")
 
         backgroundNPar = fit_functions.background_npar[backgroundFunction.__name__]
         if backgroundInitialParams is not None and len(backgroundInitialParams) != backgroundNPar:
             print(f"WARNING: {len(backgroundInitialParams)} initial parameters for combinatorial background specified, but '{backgroundFunction.__name__}' takes {backgroundNPar} parameters!")
         # Get the complete function to be used for the fit
-        fitFunc = fit_functions.make_fit_model(backgroundFunction, backgroundNPar, fitRange[0], fitRange[1])
+        if useCorrBkgTemplate:
+            # If requested, get a RDataFrame containing MC candidatates from a HF task output, to be used for correlated template background
+            if self.pathHfTree is not None:
+                if not hasattr(self.ptBins[bin], "histCorrBkg"):
+                    df = utils.read_hf_tree(self.pathHfTree)
+                    self.ptBins[bin].histCorrBkg = utils.get_mass_histogram_Kpipi0(df, self.ptBins[bin].lowerPt, self.ptBins[bin].upperPt)
+                    self.ptBins[bin].histCorrBkg.Scale(1.0 / self.ptBins[bin].histCorrBkg.Integral())
+                fitFunc = fit_functions.make_fit_model_with_corr_bkg(backgroundFunction, backgroundNPar, fitRange[0], fitRange[1], self.ptBins[bin].histCorrBkg)
+                # Require the correlated background component to be non-negative
+                nCorrIdx = fitFunc.GetParNumber("nCorr")
+                fitFunc.SetParLimits(nCorrIdx, 0, 1e10)
+            else:
+                raise Exception("Requested templated background for D0->Kpipi0 but no HF root tree provided!")
+        else:
+            fitFunc = fit_functions.make_fit_model(backgroundFunction, backgroundNPar, fitRange[0], fitRange[1])
         fitFunc.SetName(f"fitFunc_bin{bin}")
         # Fix the parameters of the reflected components
         # TODO: These parameters should have some errors associated with them, coming from to the fit to MC
-        fitFunc.FixParameter(3, self.ptBins[bin].reflectedRatio) # Ratio refl/S
+        fitFunc.FixParameter(3, self.ptBins[bin].reflectedRatio * reflRatioFactor) # Ratio refl/S
+        if doPrint:
+            print(f"Using reflectedRatio={self.ptBins[bin].reflectedRatio * reflRatioFactor} in fit")
         fitFunc.FixParameter(4, reflFunc.GetParameter("RelNorm")) # Relative normalization of the two Gaussians
         fitFunc.FixParameter(5, reflFunc.GetParameter("Mean1"))
         fitFunc.FixParameter(6, reflFunc.GetParameter("Sigma1"))
@@ -1443,13 +2024,17 @@ class Analysis():
         # Use a simple linear background to get initial parameters for the signal function
         simpleFitFunc = r.TF1(f"simpleFitFunc_bin{bin}", fit_functions.simple_fit_model, 1.7, 2.03, npar=5, ndim=1)
         simpleFitFunc.SetParameters(*simpleFitInitialParams)
-        # If specified, set range for the signal width
-        if signalSigmaRange is not None:
-            simpleFitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # Require yield to be positive
+        simpleFitFunc.SetParLimits(0, 0, 100000)
         # If specified, set range for the signal mean
         if signalMuRange is not None:
             simpleFitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
-        self.ptBins[bin].massPtSlice.Fit(simpleFitFunc, "ME0" + ("Q" if not doPrint else ""), "", simpleFitRange[0], simpleFitRange[1])
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            simpleFitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        if signalSigma is not None:
+            simpleFitFunc.FixParameter(2, signalSigma)
+        self.ptBins[bin].massPtSlice.Fit(simpleFitFunc, "LME0" + ("Q" if not doPrint else ""), "", simpleFitRange[0], simpleFitRange[1])
         fitFunc.SetParameter(0, simpleFitFunc.GetParameter(0)) # Signal yield
         fitFunc.SetParameter(1, simpleFitFunc.GetParameter(1)) # Mean
         fitFunc.SetParameter(2, simpleFitFunc.GetParameter(2)) # Sigma
@@ -1471,7 +2056,7 @@ class Analysis():
         fitFunc.FixParameter(0, simpleFitFunc.GetParameter(0)) # Signal yield
         fitFunc.FixParameter(1, simpleFitFunc.GetParameter(1)) # Mean
         fitFunc.FixParameter(2, simpleFitFunc.GetParameter(2)) # Sigma
-        self.ptBins[bin].massPtSliceShadowed.Fit(fitFunc, "ME" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        self.ptBins[bin].massPtSliceShadowed.Fit(fitFunc, "LME0" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
         if doPrint:
             print("After fit to shadowed histogram, the combinatorial background function parameters are:")
             for i in range(backgroundNPar):
@@ -1480,13 +2065,17 @@ class Analysis():
         fitFunc.ReleaseParameter(0) # Signal yield
         fitFunc.ReleaseParameter(1) # Mean
         fitFunc.ReleaseParameter(2) # Sigma
-        # If specified, set range for the signal width
-        if signalSigmaRange is not None:
-            fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        # Require yield to be positive
+        fitFunc.SetParLimits(0, 0, 100000)
         # If specified, set range for the signal mean
         if signalMuRange is not None:
             fitFunc.SetParLimits(1, signalMuRange[0], signalMuRange[1])
-        fitResult.result = self.ptBins[bin].massPtSlice.Fit(fitFunc, "MES" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        # If specified, set range for the signal width
+        if signalSigmaRange is not None:
+            fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
+        if signalSigma is not None:
+            fitFunc.FixParameter(2, signalSigma)
+        fitResult.result = self.ptBins[bin].massPtSlice.Fit(fitFunc, "LMES0" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
         # Store the functions for plotting and calculations
         fitFuncParams = [fitFunc.GetParameters()[i] for i in range(fitFunc.GetNpar())]
         fitFuncParErrors = [fitFunc.GetParErrors()[i] for i in range(fitFunc.GetNpar())]
@@ -1498,30 +2087,49 @@ class Analysis():
         signalFunc = r.TF1(f"signalFunc_bin{bin}", fit_functions.signal, self.massRange[0], self.massRange[1], 3)
         signalFunc.SetParameters(np.array(fitFuncParams[0:3], dtype='d'))
         signalFunc.SetParErrors(np.array(fitFuncParErrors[0:3], dtype='d'))
+        signalFunc.SetLineColor(r.kCyan+2)
+        signalFunc.SetFillColor(r.kCyan-8)
+        signalFunc.SetFillStyle(1001)
+        signalFunc.SetNpx(1000)
         backgroundFunc = r.TF1(f"backgroundFunc_bin{bin}", backgroundFunction, self.massRange[0], self.massRange[1], backgroundNPar)
-        backgroundFunc.SetParameters(np.array(fitFuncParams[-backgroundNPar:], dtype='d'))
-        backgroundFunc.SetParErrors(np.array(fitFuncParErrors[-backgroundNPar:], dtype='d'))
+        backgroundFunc.SetParameters(np.array(fitFuncParams[3+6:3+6+backgroundNPar], dtype='d'))
+        backgroundFunc.SetParErrors(np.array(fitFuncParErrors[3+6:3+6+backgroundNPar], dtype='d'))
         backgroundFunc.SetLineColor(r.kBlue)
+        backgroundFunc.SetLineStyle(r.kDashed)
+        backgroundFunc.SetNpx(1000)
         dataReflFunc = r.TF1(f"dataReflFunc_bin{bin}", fit_functions.reflected_background, self.massRange[0], self.massRange[1], 6)
         dataReflFunc.SetParameters(np.concatenate(([fitFuncParams[0] * fitFuncParams[3]],
                                                                     fitFuncParams[4:9]), dtype='d'))
         dataReflFunc.SetParErrors(np.concatenate(([nReflErr], fitFuncParErrors[4:9]), dtype='d'))
-        dataReflFunc.SetLineColor(r.kGreen - 1)
+        dataReflFunc.SetLineColor(r.kGreen+1)
         dataReflFunc.SetLineStyle(r.kDashed)
-        totalBackgroundFunc = fit_functions.make_background_model(backgroundFunction, backgroundNPar, self.massRange[0], self.massRange[1])
+        dataReflFunc.SetNpx(1000)
+        if useCorrBkgTemplate:
+            corrBkgFunc = fit_functions.make_correlated_background_model(self.massRange[0], self.massRange[1], self.ptBins[bin].histCorrBkg)
+            corrBkgFunc.SetName(f"corrBkgFunc_bin{bin}")
+            corrBkgFunc.SetParameter(0, fitFuncParams[3+6+backgroundNPar])
+            corrBkgFunc.SetParError(0, fitFuncParErrors[3+6+backgroundNPar])
+            corrBkgFunc.SetLineColor(r.kOrange+1)
+            corrBkgFunc.SetLineStyle(r.kDashed)
+            corrBkgFunc.SetNpx(1000)
+            totalBackgroundFunc = fit_functions.make_background_model_with_corr_bkg(backgroundFunction, backgroundNPar, self.massRange[0], self.massRange[1], self.ptBins[bin].histCorrBkg)
+        else:
+            corrBkgFunc = None
+            totalBackgroundFunc = fit_functions.make_background_model(backgroundFunction, backgroundNPar, self.massRange[0], self.massRange[1])
         totalBackgroundFunc.SetParameters(np.concatenate(([fitFuncParams[0] * fitFuncParams[3]],
                                                                     fitFuncParams[4:]), dtype='d'))
         totalBackgroundFunc.SetParErrors(np.concatenate(([nReflErr], fitFuncParErrors[4:]), dtype='d'))
         totalBackgroundFunc.SetLineColor(r.kGreen)
         totalBackgroundFunc.SetLineStyle(r.kDashed)
+        totalBackgroundFunc.SetNpx(1000)
         fitResult.create_fit_results(self.massRange[0], self.massRange[1], self.ptBins[bin],
-                                     fitFunc, signalFunc, backgroundFunc, dataReflFunc, totalBackgroundFunc,
+                                     fitFunc, signalFunc, backgroundFunc, dataReflFunc, corrBkgFunc, totalBackgroundFunc,
                                      doPrint=doPrint)
         # If this fit result is supposed to be the nominal one, save it to the pT bin as such
         if isNominal:
             self.ptBins[bin].nominalFitResult = fitResult
         else:
-            self.ptBins[bin].fitResults.append(fitResult)
+            return fitResult
 
     @deprecated(reason="Use fit_inv_mass instead!")
     def fit_inv_mass_old(self, bin, backgroundName, fitRange = [1.64, 2.08], initialParams = [], doPrint=True, isNominal=True):
@@ -1822,7 +2430,7 @@ class Analysis():
         self.efficiencyReweighted = self.efficiency.Clone()
         self.efficiencyReweighted.Reset()
         self.efficiencyReweighted.SetName("efficiencyReweighted")
-        self.efficiencyReweighted.SetTitle("(Reconstructed / Generated) " + "#times #epsilon(rap. gap) " if self.rapidityGapSelectionEfficiency is not None else "" + "(reweighted)")
+        self.efficiencyReweighted.SetTitle("(Reconstructed / Generated) " + ("#times #epsilon(rap. gap) " if self.rapidityGapSelectionEfficiency is not None else "") + "(reweighted)")
         dpT = self.efficiencyFine.GetBinWidth(1)
         # Calculate numerator of <epsilon>_i
         for i in range(1, self.efficiencyFine.GetNbinsX() + 1):
@@ -1897,53 +2505,63 @@ class Analysis():
                      f"noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}", f"noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}",
                      f"noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}", f"noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}",
                      f"{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}"]
-        fullNames = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullName + "_KPiFromD0/Pt" for fullName in fullNames]
+        fullNames = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullName + "_KPiFromD0/Y_PtFine" for fullName in fullNames]
         tmpDict = get_histograms(directory, self.runList, fullNames)
         # Reconstructed, matched D0 in selected events, but with no track or pair cuts. This is the denominator for all partial efficiencies due to track cuts
-        histDenom = tmpDict["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0/Pt"]
+        histDenom2D = tmpDict["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0/Y_PtFine"]
+        histDenom = project_fiducial_acceptance(histDenom, self.minY, self.maxY)
         histDenom = histDenom.Rebin(len(self.ptBinsArray) - 1, histDenom.GetName(), np.asarray(self.ptBinsArray, 'd'))
 
-        histD0PtKaonTPC = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTPCCut']}:noTrackCut_KPiFromD0/Pt"]
+        histD0PtKaonTPC2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTPCCut']}:noTrackCut_KPiFromD0/Y_PtFine"]
+        histD0PtKaonTPC = project_fiducial_acceptance(histD0PtKaonTPC, self.minY, self.maxY)
         histD0PtKaonTPC = histD0PtKaonTPC.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTPC.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., kaon TPC nSigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTPC, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtKaonTOF = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTOFCut']}:noTrackCut_KPiFromD0/Pt"]
+        histD0PtKaonTOF2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonTOFCut']}:noTrackCut_KPiFromD0/Y_PtFine"]
+        histD0PtKaonTOF = project_fiducial_acceptance(histD0PtKaonTOF, self.minY, self.maxY)
         histD0PtKaonTOF = histD0PtKaonTOF.Rebin(len(self.ptBinsArray) - 1, histD0PtKaonTOF.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., kaon TOF nSigma<3", "Rec. matched D0 in sel evt.", histD0PtKaonTOF, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtEtaCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['etaCut']}_KPiFromD0/Pt"]
+        histD0PtEtaCut2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['etaCut']}_KPiFromD0/Y_PtFine"]
+        histD0PtEtaCut = project_fiducial_acceptance(histD0PtEtaCut, self.minY, self.maxY)
         histD0PtEtaCut = histD0PtEtaCut.Rebin(len(self.ptBinsArray) - 1, histD0PtEtaCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track |eta|<0.9", "Rec. matched D0 in sel evt.", histD0PtEtaCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtPtCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['ptCut']}_KPiFromD0/Pt"]
+        histD0PtPtCut2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['ptCut']}_KPiFromD0/Y_PtFine"]
+        histD0PtPtCut = project_fiducial_acceptance(histD0PtPtCut, self.minY, self.maxY)
         histD0PtPtCut = histD0PtPtCut.Rebin(len(self.ptBinsArray) - 1, histD0PtPtCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track pT>0.5 GeV/c", "Rec. matched D0 in sel evt.", histD0PtPtCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtITSibCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}_KPiFromD0/Pt"]
+        histD0PtITSibCut2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['itsQualityCut']}_KPiFromD0/Y_PtFine"]
+        histD0PtITSibCut = project_fiducial_acceptance(histD0PtITSibCut, self.minY, self.maxY)
         histD0PtITSibCut = histD0PtITSibCut.Rebin(len(self.ptBinsArray) - 1, histD0PtITSibCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track IsITSibAny=1", "Rec. matched D0 in sel evt.", histD0PtITSibCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtTPCnclsCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}_KPiFromD0/Pt"]
+        histD0PtTPCnclsCut2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcNClsCut']}_KPiFromD0/Y_PtFine"]
+        histD0PtTPCnclsCut = project_fiducial_acceptance(histD0PtTPCnclsCut, self.minY, self.maxY)
         histD0PtTPCnclsCut = histD0PtTPCnclsCut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCnclsCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track TPC nCls > 50", "Rec. matched D0 in sel evt.", histD0PtTPCnclsCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtDCAzCut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}_KPiFromD0/Pt"]
+        histD0PtDCAzCut2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['dcaZCut']}_KPiFromD0/Y_PtFine"]
+        histD0PtDCAzCut = project_fiducial_acceptance(histD0PtDCAzCut, self.minY, self.maxY)
         histD0PtDCAzCut = histD0PtDCAzCut.Rebin(len(self.ptBinsArray) - 1, histD0PtDCAzCut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track |DCAz| < 0.3 cm", "Rec. matched D0 in sel evt.", histD0PtDCAzCut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtTPCchi2Cut = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}_KPiFromD0/Pt"]
+        histD0PtTPCchi2Cut2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_{trackCutNames['tpcChi2Cut']}_KPiFromD0/Y_PtFine"]
+        histD0PtTPCchi2Cut = project_fiducial_acceptance(histD0PtTPCchi2Cut, self.minY, self.maxY)
         histD0PtTPCchi2Cut = histD0PtTPCchi2Cut.Rebin(len(self.ptBinsArray) - 1, histD0PtTPCchi2Cut.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., track TPCchi2 < 4", "Rec. matched D0 in sel evt.", histD0PtTPCchi2Cut, histDenom)
         self.trackCutEfficiencies.append(eff)
         del eff
-        histD0PtAllTrackCuts = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}_KPiFromD0/Pt"]
+        histD0PtAllTrackCuts2D = tmpDict[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{trackCutNames['kaonFullCut']}:noTrackCut_{trackCutNames['fullCommonCut']}_KPiFromD0/Y_PtFine"]
+        histD0PtAllTrackCuts = project_fiducial_acceptance(histD0PtAllTrackCuts, self.minY, self.maxY)
         histD0PtAllTrackCuts = histD0PtAllTrackCuts.Rebin(len(self.ptBinsArray) - 1, histD0PtAllTrackCuts.GetName(), np.asarray(self.ptBinsArray, 'd'))
         eff = Efficiency("Rec. matched D0 in sel evt., after all track cuts", "Rec. matched D0 in sel evt.", histD0PtAllTrackCuts, histDenom)
         self.trackCutEfficiencies.append(eff)
@@ -1994,16 +2612,19 @@ class Analysis():
         self.histD0PtGenAfterBcCutsDaughtersInAcc.SetTitle(f"Generated D0 in selected event with both daughters in acceptance, {self.minY} < y < {self.maxY}")
         self.histD0PtGenAfterBcCutsDaughtersInAcc = self.histD0PtGenAfterBcCutsDaughtersInAcc.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenAfterBcCutsDaughtersInAccFinalBins", np.asarray(self.ptBinsArray, 'd'))
 
-        self.histD0PtMatchedInSelEvent = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS/Pt"]
+        histD0YPtMatchedInSelEvent = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS/Y_PtFine"]
+        self.histD0PtMatchedInSelEvent = project_fiducial_acceptance(histD0YPtMatchedInSelEvent, self.minY, self.maxY)
         self.histD0PtMatchedInSelEvent = self.histD0PtMatchedInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEvent", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtMatchedInSelEvent.SetTitle("Reconstructed, matched D0->Kpi in selected event, no track or pair cuts")
 
-        self.histD0PtMatchedInSelEventAfterTrackCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_KPiFromD0FS/Pt"]
+        histD0YPtMatchedInSelEventAfterTrackCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_KPiFromD0FS/Y_PtFine"]
+        self.histD0PtMatchedInSelEventAfterTrackCuts = project_fiducial_acceptance(histD0YPtMatchedInSelEventAfterTrackCuts, self.minY, self.maxY)
         self.histD0PtMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCuts.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEventAfterTrackCuts", np.asarray(self.ptBinsArray, 'd'))
         self.histD0PtMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
 
         if not hasattr(self, 'histD0PtMatchedFinalBins'):
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS/Pt"]
+            histD0YPtMatchedInSelEventAfterTrackCutsAndPairCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS/Y_PtFine"]
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = project_fiducial_acceptance(histD0YPtMatchedInSelEventAfterTrackCutsAndPairCuts, self.minY, self.maxY)
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Rebin(len(self.ptBinsArray) - 1, "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", np.asarray(self.ptBinsArray, 'd'))
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
         else:
@@ -2092,7 +2713,7 @@ class Analysis():
             r.gPad.SetLogy()
             self.canvasRawYieldPerEvent.Draw()
 
-    def calculate_cross_section(self):
+    def calculate_cross_section(self, statErrorsOnly=False, draw=True):
         # Get the branching fraction from the PDG
         import pdg
         pdgApi = pdg.connect()
@@ -2110,13 +2731,30 @@ class Analysis():
         self.histCrossSection.Scale(1. / self.lumi) # µb / GeVc^-1
         self.histCrossSection.Scale(1. / 1000.) # mb / GeVc^-1
         self.histCrossSection.GetYaxis().SetTitle("d^{2}#sigma/dp_{T}dy (mb/GeVc^{-1})")
-        if hasattr(self, 'canvasCrossSection'):
-            del self.canvasCrossSection
-        self.canvasCrossSection = r.TCanvas("canvasCrossSection")
-        self.canvasCrossSection.cd()
-        self.histCrossSection.Draw()
-        r.gPad.SetLogy()
-        self.canvasCrossSection.Draw()
+        for i, bin in enumerate(self.ptBins):
+            err = (bin.nominalFitResult.relativeStatError * self.histCrossSection.GetBinContent(i+1))**2
+            if not statErrorsOnly:
+                err += (bin.relativeSysError * self.histCrossSection.GetBinContent(i+1))**2
+            err = np.sqrt(err)
+            self.histCrossSection.SetBinError(i+1, err)
+        if draw:
+            if hasattr(self, 'canvasCrossSection'):
+                del self.canvasCrossSection
+            self.canvasCrossSection = r.TCanvas("canvasCrossSection")
+            self.canvasCrossSection.cd()
+            self.histCrossSection.Draw()
+            r.gPad.SetLogy()
+            self.canvasCrossSection.Draw()
+
+    def calculate_systematic_uncertainty(self):
+        # Add in quadrature the sytematic uncertainty from all sources
+        for ptBin in self.ptBins:
+            relErr = 0
+            # Yield extraction
+            relErr += (ptBin.histSystematicYieldDistribution.GetRMS() / ptBin.histSystematicYieldDistribution.GetMean())**2
+            # Other sources here...
+            relErr = np.sqrt(relErr)
+            ptBin.relativeSysError = relErr
 
     def draw_efficiency(self):
         if hasattr(self, 'canvasEfficiency'):
@@ -2169,7 +2807,7 @@ class Analysis():
         self.canvasEfficiency.Draw()
 
 
-    def draw_fits_and_yield(self, showFitRangeOnly=False, nCols=3, showRawYield=True):
+    def draw_fits_and_yield(self, showFitRangeOnly=False, nCols=3, showRawYield=True, showLegend=False, componentStyle=1):
         # Figure out grid layout
         nPanels = len(self.ptBins) + showRawYield
         nRows = int(np.ceil(nPanels/nCols))
@@ -2181,23 +2819,74 @@ class Analysis():
         self.textBoxesFitsYields = []
         self.linesFitrangeLow = []
         self.linesFitrangeHigh = []
+        self.legendsFitsYields = []
         for i, bin in enumerate(self.ptBins):
             self.histRawYield.SetBinContent(i+1, bin.nominalFitResult.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
             self.histRawYield.SetBinError(i+1, bin.nominalFitResult.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nominalFitResult.nSignal)
             # Draw the histograms with fits
             self.canvasFitsYields.cd(i+1)
+            self.legendsFitsYields.append(r.TLegend(0.12, 0.12, 0.4 if bin.nominalFitResult.corrBkgFunc is None else 0.5, 0.4))
+            self.legendsFitsYields[i].SetBorderSize(0)
+            self.legendsFitsYields[i].SetFillStyle(0)
             bin.massPtSlice.Draw("E")
+            bin.massPtSlice.SetLineColor(r.kBlack)
+            bin.massPtSlice.SetMarkerStyle(r.kFullCircle)
+            bin.massPtSlice.SetMarkerSize(0.5)
+            bin.massPtSlice.SetStats(0)
             if showFitRangeOnly:
                 bin.massPtSlice.GetXaxis().SetRangeUser(bin.nominalFitResult.lowerMass, bin.nominalFitResult.upperMass)
             else:
                 bin.massPtSlice.GetXaxis().SetRangeUser(1.5, 2.2)
-            bin.massPtSlice.SetStats(0)
+            self.legendsFitsYields[i].AddEntry(bin.massPtSlice, "Data")
             bin.nominalFitResult.fitFunc.Draw("same")
+            self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.fitFunc, "Total fit function")
             bin.nominalFitResult.backgroundFunc.Draw("same")
-            bin.nominalFitResult.totalBackgroundFunc.Draw("same")
+            self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.backgroundFunc, f"Comb. background")
+            if componentStyle == 1:
+                # Draw the sum of the combinatorial background and reflected background on an existing canvas
+                def make_comb_plus_refl_callable(bbin):
+                    def f(x: np.ndarray, par: np.ndarray) -> float:
+                        m = x[0]
+                        return bbin.nominalFitResult.backgroundFunc.Eval(m) + bbin.nominalFitResult.dataReflFunc.Eval(m)
+                    return f
+                fCall = make_comb_plus_refl_callable(bin)
+                _tf1_callables.append(fCall)
+                funcCombPlusRefl = r.TF1(f"combPlusReflFunc_bin{bin.index}", _tf1_callables[-1], bin.nominalFitResult.backgroundFunc.GetXmin(), bin.nominalFitResult.backgroundFunc.GetXmax(), 0)
+                funcCombPlusRefl.SetLineColor(r.kGreen+1)
+                funcCombPlusRefl.SetLineStyle(r.kDashed)
+                funcCombPlusRefl.SetNpx(1000)
+                funcCombPlusRefl.Draw('same')
+                self.legendsFitsYields[i].AddEntry(funcCombPlusRefl, f"Comb. + refl bkg")
+                if bin.nominalFitResult.corrBkgFunc is not None:
+                    # bin.nominalFitResult.draw_combpluscorrbkgfunc()
+                    def make_comb_plus_corr_callable(bbin):
+                        def g(x: np.ndarray, par: np.ndarray) -> float:
+                            m = x[0]
+                            return bbin.nominalFitResult.backgroundFunc.Eval(m) + bbin.nominalFitResult.corrBkgFunc.Eval(m)
+                        return g
+                    gCall = make_comb_plus_corr_callable(bin)
+                    _tf1_callables.append(gCall)
+                    funcCombPlusCorr = r.TF1(f"combPlusCorrBkgFunc_bin{bin.index}", _tf1_callables[-1], bin.nominalFitResult.backgroundFunc.GetXmin(), bin.nominalFitResult.backgroundFunc.GetXmax(), 0)
+                    funcCombPlusCorr.SetLineColor(r.kOrange+1)
+                    funcCombPlusCorr.SetLineStyle(r.kDashed)
+                    funcCombPlusCorr.SetNpx(1000)
+                    funcCombPlusCorr.Draw('same')
+                    self.legendsFitsYields[i].AddEntry(funcCombPlusCorr, "Comb. bkg + D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}")
+            elif componentStyle == 2:
+                bin.nominalFitResult.signalFunc.Draw("same LF2")
+                self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.signalFunc, "Signal")
+                bin.nominalFitResult.dataReflFunc.Draw("same")
+                self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.dataReflFunc, f"Refl. background")
+                if bin.nominalFitResult.corrBkgFunc is not None:
+                    bin.nominalFitResult.corrBkgFunc.Draw("same")
+                    self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.corrBkgFunc, "D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}")
+            # Draw data again so that it sits in front
+            bin.massPtSlice.Draw("E same")
+            if showLegend:
+                self.legendsFitsYields[i].Draw()
             # Text box with info
-            self.textBoxesFitsYields.append(r.TPaveText(0.65, 0.5, 0.95, 0.85, "NDC"))
+            self.textBoxesFitsYields.append(r.TPaveText(0.65, 0.55, 0.95, 0.9, "NDC"))
             self.textBoxesFitsYields[i].SetName(f"textbox_bin{i}")
             self.textBoxesFitsYields[i].SetFillColor(0)
             self.textBoxesFitsYields[i].SetFillStyle(0)
@@ -2206,11 +2895,11 @@ class Analysis():
             self.textBoxesFitsYields[i].SetTextFont(42)
             self.textBoxesFitsYields[i].SetTextSize(0.04)
             self.textBoxesFitsYields[i].AddText(f"#mu = {bin.nominalFitResult.fitMu:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"#sigma = {bin.nominalFitResult.fitSigma:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"#sigma = {bin.nominalFitResult.fitSigma:.4f}")
             self.textBoxesFitsYields[i].AddText(f"S = {bin.nominalFitResult.nSignal:.3f}")
             self.textBoxesFitsYields[i].AddText(f"S/B (3#sigma)= {bin.nominalFitResult.signalToBackground:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"S/#sqrt{{S+B}} = {bin.nominalFitResult.signalSignificance:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"Refl/S = {bin.nominalFitResult.nReflBackground/bin.nominalFitResult.nSignal:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"S/#sqrt{{S+B}} = {bin.nominalFitResult.signalSignificance:.1f}")
+            # self.textBoxesFitsYields[i].AddText(f"Refl/S = {bin.nominalFitResult.nReflBackground/bin.nominalFitResult.nSignal:.3f}")
             self.textBoxesFitsYields[i].AddText(f"#chi^{{2}}/ndf = {bin.nominalFitResult.fitChi2Ndf:.3f}")
             self.textBoxesFitsYields[i].Draw()
 
@@ -2275,7 +2964,7 @@ class Analysis():
             self.textBoxesReflected[i].SetBorderSize(0)
             self.textBoxesReflected[i].SetTextAlign(12)
             self.textBoxesReflected[i].SetTextFont(42)
-            self.textBoxesReflected[i].SetTextSize(0.04)
+            self.textBoxesReflected[i].SetTextSize(0.035)
             self.textBoxesReflected[i].AddText(f"Refl/S = {bin.reflectedRatio:.3f}")
             # self.textBoxesReflected[i].AddText(f"chi2/ndof = {bin.reflChi2Ndf:.3f}")
             self.textBoxesReflected[i].AddText(f"Integral = {bin.reflFunc.GetParameter('Integral'):.3f}")
@@ -2287,3 +2976,73 @@ class Analysis():
             self.textBoxesReflected[i].Draw()
 
         self.canvasReflFits.Draw()
+
+class McAnalysis():
+    """Class for analysing the MC only"""
+
+    def __init__(self, dirRec, dirGen,
+                 ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, 
+                 recFileStructure=FileStructures.FLAT,
+                 genFileStructure=FileStructures.FLAT,
+                 **kwargs):
+        # The runList defines which files are looped over in run-by-run calculations
+        self.runList = runList if runList is not None else DEFAULT_RUNLIST_PASS4.copy()
+        self.runList = sorted(self.runList)
+        print(f"This MC analysis contains {len(self.runList)} runs")
+
+        self.dirRec = dirRec
+        self.dirGen = dirGen
+
+        # Get default cut names, replace if specified in construction
+        cutNames = {
+            "kaonLegCutName" : "kaonPIDTPCTOFpTDCAz",
+            "pionLegCutName" : "pionNoPIDpTDCAz",
+            "pairCutName"    : "PtDepTauxyzprojCut"
+        }
+        cutNames.update(kwargs)
+        self.kaonLegCutName = cutNames["kaonLegCutName"]
+        self.pionLegCutName = cutNames["pionLegCutName"]
+        self.pairCutName = cutNames["pairCutName"]
+        # pT bins to be used in the differential cross section
+        self.ptBinsArray = ptBins
+        self.ptBins = []
+        for i in range(len(self.ptBinsArray) - 1):
+            self.ptBins.append(PtBin(i, self.ptBinsArray[i], self.ptBinsArray[i+1]))
+        # Range of rapidity bin to be used
+        self.minY = -0.9
+        self.maxY = 0.9
+        # Get the mass histograms needed for the signal extraction
+        self.recFileStructure = recFileStructure
+        self.genFileStructure = genFileStructure
+        self.prepare_histograms()
+
+    def prepare_histograms(self):
+        self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
+        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
+
+        # Obtain the main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
+        fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
+        fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
+        fullNamesEventMult = ["table-maker-m-c/output;1/Event_MCTruth/MultMCNParticlesEta10", "analysis-event-selection/output;1/Event_BeforeCuts/VtxNContribReal"]
+        fullNamesGen += fullNamesEventMult
+        fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
+        fullNamesGen.append(fullNameHistD0PtYGenerated)
+        self.dictGenHists = get_histograms(self.dirGen, self.runList, fullNamesGen, histogramNamesfileStructure=self.genFileStructure)
+        self.histD0PtYGenerated = self.dictGenHists[fullNameHistD0PtYGenerated]
+        # Project out our dy bin from the gen histogram
+        lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
+        upperYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.maxY) - 1
+        self.histD0PtGenerated = self.histD0PtYGenerated.ProjectionX(f"projPtMcGen_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
+        self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY} < y < {self.maxY}")
+        # Obtain the main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
+        fullNamesRec = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
+        fullNamesRec = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Pt" for fullNameRec in fullNamesRec]
+        fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
+        fullNamesRec.append(fullNameHistD0PtMatched)
+        self.dictRecHists = get_histograms(self.dirRec, self.runList, fullNamesRec, histogramNamesfileStructure=self.recFileStructure)
+        self.histD0PtMatched = self.dictRecHists[fullNameHistD0PtMatched]
+        self.histD0PtMatched.SetName("histD0PtMatched")
+        self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
+    
+    def calculate_factorized_efficiencies(self):
+        Analysis.calculate_factorized_efficiencies(self)
