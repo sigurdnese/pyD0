@@ -155,7 +155,7 @@ def build_histograms_map(filePath):
 
     return histogramsMap
 
-def get_histograms_from_file(filePath, fullHistogramNames, fileName = 'AnalysisResults.root'):
+def get_histograms_from_file(filePath, fullHistogramNames):
     splitHistNames = [s.split("/") for s in fullHistogramNames] 
     namesDict = {}
     for irow, (row, fullName) in enumerate(zip(splitHistNames, fullHistogramNames)):
@@ -435,7 +435,7 @@ def run_by_run_data_mc(variableNames, units, dataDir, mcDir, daughter, runListFu
 
     return axs
 
-def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, mmin=1.81, mmax=1.90, text=False, useLumi=True):
+def run_by_run_num_candidates_compare_runlists(dataDir, mcDir, runListFull, runList1, runList2, mmin=1.81, mmax=1.90, text=False, useLumi=True):
     """
     Plot the number of D0 candidates vs run number, for data and MC.
     """
@@ -561,7 +561,7 @@ def run_by_run_num_candidates(dataDir, mcDir, runListFull, runList1, runList2, m
 
     return ax, listDataNumCandidates, listMcNumCandidates
 
-def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorDir, denominatorDir, runListFull, runList1, runList2, minPt=0., maxPt=20., text=False, doPlot=True):
+def run_by_run_efficiency_compare_runlists(numeratorString, denominatorString, numeratorTitle, denominatorTitle, numeratorDir, denominatorDir, runListFull, runList1, runList2, minPt=0., maxPt=20., text=False, doPlot=True):
     """
     Given a directory of AnalysisResults.root files for each run, create a plot showing a given efficiency vs run number. Use uproot for I/O.
     """
@@ -683,6 +683,289 @@ def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, de
         plt.tight_layout()
         plt.show()
     return runAxis, listMeanEff, listMeanEffError, title
+
+def run_by_run_efficiency(numeratorString, denominatorString, numeratorTitle, denominatorTitle, runList, numeratorDir, denominatorDir=None, minPt=0., maxPt=20., minY=-0.8, maxY=0.8, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt', text=False):
+    """
+    Given a directory of AnalysisResults.root files for each run, create a plot showing a given efficiency vs interaction rate. Use uproot for I/O.
+    """
+    if denominatorDir is None:
+        denominatorDir = numeratorDir
+    if 'Gen' in numeratorString:
+        numeratorHistName = 'MyMcPtYHisto'
+    else:
+        numeratorHistName = 'Y_PtFine'
+    if 'Gen' in denominatorString:
+        denominatorHistName = 'MyMcPtYHisto'
+    else:
+        denominatorHistName = 'Y_PtFine'
+
+    df = pd.read_csv(irFilePath, sep=' ', names=['runNumber', 'ir'])
+    df['ir'] = df['ir'].astype(float)
+    df['runNumber'] = df['runNumber'].astype(str)
+    df = df[df['runNumber'].isin(runList)]
+    df = df.set_index('runNumber')
+
+    for irun, run in enumerate(runList):
+        print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+        numeratorFilepath = f"{numeratorDir}/AnalysisResults_run{run}.root"
+        with uproot.open(numeratorFilepath) as numTmpFile:
+            tmpDir = numTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == numeratorString:
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == numeratorHistName:
+                        numHistRaw = tmpDir[i][ii]
+        numHist = numHistRaw.to_hist()
+        # Project out our pT and rapidity range
+        if 'Gen' in numeratorString:
+            numCount = numHist[complex(0, minPt):complex(0, maxPt),complex(0, minY):complex(0, maxY)].sum().value
+        else:
+            numCount = numHist[complex(0, minY):complex(0, maxY),complex(0, minPt):complex(0, maxPt)].sum().value
+
+        denominatorFilepath = f"{denominatorDir}/AnalysisResults_run{run}.root"
+        with uproot.open(denominatorFilepath) as denTmpFile:
+            tmpDir = denTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == denominatorString:
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == denominatorHistName:
+                        denHistRaw = tmpDir[i][ii]
+        denHist = denHistRaw.to_hist()
+        # Project out our pT and rapidity range
+        if 'Gen' in denominatorString:
+            denCount = denHist[complex(0, minPt):complex(0, maxPt),complex(0, minY):complex(0, maxY)].sum().value
+        else:
+            denCount = denHist[complex(0, minY):complex(0, maxY),complex(0, minPt):complex(0, maxPt)].sum().value
+
+        # We want the average efficiency per run; rebin such that we have only one bin, extract the content and error
+        if numCount == 0:
+            eff = 0
+            effError = 0
+        else:
+            eff = numCount / denCount
+            effError = (1/denCount) * np.sqrt(numCount * (1 - numCount/denCount)) # Binomial error calculation
+        df.loc[run, 'eff'] = eff
+        df.loc[run, 'effError'] = effError
+        
+    print("Complete!                        ")
+
+    title = f"$\\frac{{\\text{{{numeratorTitle}}}}}{{\\text{{{denominatorTitle}}}}}$, {minPt} < $p_\\text{{T}}$ < {maxPt} GeV/c, {minY} < y < {maxY}"
+    fig, ax = plt.subplots(figsize=(15, 5))
+    ax.set_title(title)
+    ax.errorbar(df['ir'], df['eff'], yerr=df['effError'], capsize=3, fmt="o")
+    ax.set_ylabel('$\\epsilon$')
+    plt.tight_layout()
+    plt.show()
+    return df
+
+def run_by_run_num_candidates(dataDir, runList, lumiFilePath="~/cernbox/singlegap/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
+                              mmin=1.81, mmax=1.90, minPt=0., maxPt=12., minY=-0.8, maxY=0.8, text=False, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt'):
+    """
+    Plot the number of D0 candidates vs run interaction rate
+    """
+
+    df = pd.read_csv(irFilePath, sep=' ', names=['runNumber', 'ir'])
+    df['ir'] = df['ir'].astype(float)
+    df['runNumber'] = df['runNumber'].astype(str)
+    df = df[df['runNumber'].isin(runList)]
+    df = df.set_index('runNumber')
+
+    lumiFile = r.TFile.Open(lumiFilePath)
+    lumiHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTCEafterBCcuts')
+    for run in runList:
+        lumi = lumiHist.GetBinContent(lumiHist.GetXaxis().FindBin(run))
+        df.loc[run, 'lumi'] = lumi
+
+    for irun, run in enumerate(runList):
+        print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+        if 'perlmutter' in dataDir:
+            dataFilepath = f"{dataDir}/AnalysisResults_run{run}.root"
+        else:
+            dataFilepath = f"{dataDir}/{run}/AnalysisResults.root"
+        with uproot.open(dataFilepath) as dataTmpFile:
+            tmpDir = dataTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepLxyCosPointingAngleCut":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MyMassPtYHisto':
+                        dataHistRaw = tmpDir[i][ii]
+
+        dataHist = dataHistRaw.to_hist()
+        dataNumCandidates = dataHist[complex(0, mmin):complex(0, mmax), complex(0, minPt):complex(0, maxPt), complex(0, minY):complex(0, maxY)].sum().value
+        df.loc[run, 'dataNumCandidates'] = dataNumCandidates
+
+    print("Complete!                        ")
+
+    fig, ax = plt.subplots(figsize=(15, 5))
+
+    ax.set_title(f"D0 candidates / lumi (µb) in data ({mmin} < m < {mmax} GeV/c2, {minPt} < pT < {maxPt} GeV/c, {minY} < y < {maxY})")
+    ax.scatter(df['ir'], df['dataNumCandidates']/df['lumi'])
+    plt.tight_layout()
+    plt.show()
+
+    return df
+
+def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="~/cernbox/singlegap/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
+                           mmin=1.81, mmax=1.90, minPt=0., maxPt=12., minY=-0.8, maxY=0.8, text=False, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt', fileStructure=FileStructures.RUNDIRS):
+    """
+    Create a dataframe containing run-by-run quantities for mc
+    """
+
+    df = pd.read_csv(irFilePath, sep=' ', names=['runNumber', 'ir'])
+    df['ir'] = df['ir'].astype(float)
+    df['runNumber'] = df['runNumber'].astype(str)
+    df = df[df['runNumber'].isin(runList)]
+    df = df.set_index('runNumber')
+
+    lumiFile = r.TFile.Open(lumiFilePath)
+    lumiHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTCEafterBCcuts')
+    for run in runList:
+        lumi = lumiHist.GetBinContent(lumiHist.GetXaxis().FindBin(run))
+        df.loc[run, 'lumi'] = lumi
+
+    for irun, run in enumerate(runList):
+        print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+        if fileStructure is FileStructures.FLAT:
+            mcFilepath = f"{mcDir}/AnalysisResults_run{run}.root"
+        else:
+            mcFilepath = f"{mcDir}/{run}/AnalysisResults.root"
+
+        # Get event info
+        with uproot.open(mcFilepath) as mcTmpFile:
+            tmpDir = mcTmpFile["analysis-event-selection/output;1"]
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "Event_BeforeCuts":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'VtxNContribReal':
+                        histRawVtxNContribReal = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'VtxNContrib':
+                        histRawVtxNContrib = tmpDir[i][ii]
+            elif item.member("fName") == "Event_AfterCuts":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'VtxNContribReal':
+                        histRawAfterCutsVtxNContribReal = tmpDir[i][ii]
+            elif item.member("fName") == "EventsMC":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MyMcIsNoITSROFBorderMcIsNoTFBorderHisto':
+                        histRawMcIsBorder2d = tmpDir[i][ii]
+
+        histVtxNContribReal = histRawVtxNContribReal.to_writable().to_pyroot()
+        df.loc[run, 'meanVtxNContribReal'] = histVtxNContribReal.GetMean()
+        df.loc[run, 'meanVtxNContribRealError'] = histVtxNContribReal.GetMeanError()
+        df.loc[run, 'nEventsVtxNContribRealUnder17'] = histVtxNContribReal.Integral(1,17)
+        df.loc[run, 'nEventsVtxNContribRealOver16'] = histVtxNContribReal.Integral(18,-1)
+        # Count the number of events before cuts (but after TF and ROF border cuts) in this run
+        df.loc[run, 'nEventsBeforeCuts'] = histVtxNContribReal.GetEntries()
+        histVtxNContrib = histRawVtxNContrib.to_writable().to_pyroot()
+        df.loc[run, 'meanVtxNContrib'] = histVtxNContrib.GetMean()
+        df.loc[run, 'meanVtxNContribError'] = histVtxNContrib.GetMeanError()
+        df.loc[run, 'nEventsVtxNContribUnder17'] = histVtxNContrib.Integral(1,17)
+        df.loc[run, 'nEventsVtxNContribOver16'] = histVtxNContrib.Integral(18,-1)
+        # Count the number of events after cuts in this run
+        df.loc[run, 'nEventsAfterCuts'] = histRawAfterCutsVtxNContribReal.to_writable().to_pyroot().GetEntries()
+        # Count the number of MC events after MC TF and ROF border cuts in this run
+        df.loc[run, 'nEventsMC'] = histRawMcIsBorder2d.to_writable().to_pyroot().GetBinContent(2,2)
+
+        # Get pair info
+        with uproot.open(mcFilepath) as mcTmpFile:
+            tmpDir = mcTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_singleGapTrackCuts4_PtDepLxyCosPointingAngleCut_KPiFromD0FS":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'Y_PtFine':
+                        mcHistRecRaw = tmpDir[i][ii]
+            elif item.member("fName") == "MCTruthGenAfterBcCuts_D0FS":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MyMcPtYHisto':
+                        mcHistGenRaw = tmpDir[i][ii]
+
+        mcHistRec = mcHistRecRaw.to_hist()
+        mcNumRecCandidates = mcHistRec[complex(0, minY):complex(0, maxY), complex(0, minPt):complex(0, maxPt)].sum().value
+        df.loc[run, 'mcNumRecCandidates'] = mcNumRecCandidates
+        mcHistGen = mcHistGenRaw.to_hist()
+        mcNumGenCandidates = mcHistGen[complex(0, minPt):complex(0, maxPt), complex(0, minY):complex(0, maxY)].sum().value
+        df.loc[run, 'mcNumGenCandidates'] = mcNumGenCandidates
+
+    print("Complete!                        ")
+
+    return df
+
+def get_run_by_run_data_info(dataDir, runList, lumiFilePath="~/cernbox/singlegap/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
+                             mmin=1.81, mmax=1.90, minPt=0., maxPt=12., minY=-0.8, maxY=0.8, text=False, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt', fileStructure=FileStructures.RUNDIRS):
+    """
+    Create a dataframe containing run-by-run quantities for data
+    """
+
+    df = pd.read_csv(irFilePath, sep=' ', names=['runNumber', 'ir'])
+    df['ir'] = df['ir'].astype(float)
+    df['runNumber'] = df['runNumber'].astype(str)
+    df = df[df['runNumber'].isin(runList)]
+    df = df.set_index('runNumber')
+
+    lumiFile = r.TFile.Open(lumiFilePath)
+    lumiHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTCEafterBCcuts')
+    for run in runList:
+        lumi = lumiHist.GetBinContent(lumiHist.GetXaxis().FindBin(run))
+        df.loc[run, 'lumi'] = lumi
+
+    for irun, run in enumerate(runList):
+        print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+        if fileStructure is FileStructures.FLAT:
+            dataFilepath = f"{dataDir}/AnalysisResults_run{run}.root"
+        else:
+            dataFilepath = f"{dataDir}/{run}/AnalysisResults.root"
+
+        # Get event info
+        with uproot.open(dataFilepath) as dataTmpFile:
+            tmpDir = dataTmpFile["analysis-event-selection/output;1"]
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "Event_AfterCuts":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'VtxNContribReal':
+                        histRawVtxNContribReal = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'VtxNContrib':
+                        histRawVtxNContrib = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'MyAmpFT0A_AmpFT0CHisto':
+                        histRawFT0 = tmpDir[i][ii]
+
+        histVtxNContribReal = histRawVtxNContribReal.to_writable().to_pyroot()
+        df.loc[run, 'meanVtxNContribReal'] = histVtxNContribReal.GetMean()
+        df.loc[run, 'meanVtxNContribRealError'] = histVtxNContribReal.GetMeanError()
+        df.loc[run, 'nEventsVtxNContribRealUnder17'] = histVtxNContribReal.Integral(1,17)
+        df.loc[run, 'nEventsVtxNContribRealOver16'] = histVtxNContribReal.Integral(18,-1)
+        # Count the number of events in this run
+        df.loc[run, 'nEventsAfterCuts'] = histVtxNContribReal.GetEntries()
+        histVtxNContrib = histRawVtxNContrib.to_writable().to_pyroot()
+        df.loc[run, 'meanVtxNContrib'] = histVtxNContrib.GetMean()
+        df.loc[run, 'meanVtxNContribError'] = histVtxNContrib.GetMeanError()
+        df.loc[run, 'nEventsVtxNContribUnder17'] = histVtxNContrib.Integral(1,17)
+        df.loc[run, 'nEventsVtxNContribOver16'] = histVtxNContrib.Integral(18,-1)
+        # Count the number of events in specific ranges of FT0A or FT0C amplitudes
+        histFT0 = histRawFT0.to_writable().to_pyroot()
+        df.loc[run, 'nEventsFT0AAbove100'] = histFT0.Integral(101, -1, 1, -1)
+        df.loc[run, 'nEventsFT0CAbove50'] = histFT0.Integral(1, -1, 51, -1)
+
+        # Get pair info
+        with uproot.open(dataFilepath) as dataTmpFile:
+            tmpDir = dataTmpFile["analysis-asymmetric-pairing/output;1"]
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz_PtDepLxyCosPointingAngleCut":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MyMassPtYHisto':
+                        dataHistRaw = tmpDir[i][ii]
+
+        dataHist = dataHistRaw.to_hist()
+        dataNumCandidates = dataHist[complex(0, mmin):complex(0, mmax), complex(0, minPt):complex(0, maxPt), complex(0, minY):complex(0, maxY)].sum().value
+        df.loc[run, 'dataNumCandidates'] = dataNumCandidates
+
+    print("Complete!                        ")
+
+    return df
 
 def run_by_run_tof_matching_efficiency(runListFull, runListNo, runListYes, runListExclude, directory, dataOrMc='mc', showPlot=True, firstPtBin=0, lastPtBin=-1, firstEtaBin=0, lastEtaBin=-1, sortBy='yesno'):
     """
@@ -1508,7 +1791,7 @@ class PtBin():
         self.reflFunc.SetLineColor(r.kRed)
         self.reflFunc.Draw("same")
         # Text box with info
-        self.textBoxReflected = r.TPaveText(0.6, 0.4, 1., 0.9, "NDC")
+        self.textBoxReflected = r.TPaveText(0.6, 0.4, 0.85, 0.9, "NDC")
         self.textBoxReflected.SetName(f"textboxreflected_bin{self.index}")
         self.textBoxReflected.SetFillColor(0)
         self.textBoxReflected.SetFillStyle(0)
@@ -1802,18 +2085,19 @@ class Analysis():
             self.histLumi = self.histLumi.Get(self.hLumiPath[2])
 
         # --- Define lists of histogram names ---
-        # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
-        fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
-        fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
-        fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
-        fullNamesGen.append(fullNameHistD0PtYGenerated)
         # Data histograms
         fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtHisto"
         fullNameHistD0MassPtY = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtYHisto"
         fullNameHistD0MassPtIsGap = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtIsGapHisto"
         fullNameHistMultiDimA = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapAHisto"
         fullNameHistMultiDimC = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapCHisto"
-        fullNameHistEventAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxZ"
+        fullNameHistVtxNContribAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxNContrib"
+        fullNameHistVtxNContribRealAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxNContribReal"
+        # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
+        fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
+        fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
+        fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
+        fullNamesGen.append(fullNameHistD0PtYGenerated)
         # Main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
         fullNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
         fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Y_PtFine" for fullNameRec in fullNamesMc]
@@ -1863,7 +2147,7 @@ class Analysis():
         self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY:.1f} < y < {self.maxY:.1f}")
 
         # Get data histograms
-        tmpDict = get_histograms(self.dirData, self.runList, [fullNameHistD0MassPt, fullNameHistD0MassPtY, fullNameHistD0MassPtIsGap, fullNameHistEventAfterCuts, fullNameHistMultiDimA, fullNameHistMultiDimC], histogramNamesfileStructure=self.dataFileStructure)
+        tmpDict = get_histograms(self.dirData, self.runList, [fullNameHistD0MassPt, fullNameHistD0MassPtY, fullNameHistD0MassPtIsGap, fullNameHistVtxNContribAfterCuts, fullNameHistVtxNContribRealAfterCuts, fullNameHistMultiDimA, fullNameHistMultiDimC], histogramNamesfileStructure=self.dataFileStructure)
         try:
             self.histD0MassPtY = tmpDict[fullNameHistD0MassPtY]
             self.histD0MassPtY.GetZaxis().SetRangeUser(self.minY, self.maxY)
@@ -1881,8 +2165,9 @@ class Analysis():
                 raise Exception(f"Unable to find suitable histogram in data to make projection in rapidity!")
 
 
-        self.histEventAfterCuts = tmpDict[fullNameHistEventAfterCuts]
-        self.nEvents = self.histEventAfterCuts.GetEntries()
+        self.histVtxNContribAfterCuts = tmpDict[fullNameHistVtxNContribAfterCuts]
+        self.histVtxNContribRealAfterCuts = tmpDict[fullNameHistVtxNContribRealAfterCuts]
+        self.nEvents = self.histVtxNContribAfterCuts.GetEntries()
         del tmpDict
 
         # Get info and histograms belonging to the pT bins in the analysis 
@@ -1896,7 +2181,7 @@ class Analysis():
             bin.massPtSlice = hProjectionMass
 
             hProjectionMassReflected = self.histD0MassPtReflected.ProjectionX(f"projMassMcReflected_{bin.lowerPt}_{bin.upperPt}", firstybin=lowerBin, lastybin=upperBin)
-            hProjectionMassReflected.Rebin(8)
+            hProjectionMassReflected.Rebin(7)
             hProjectionMassReflected.SetTitle(f"MC matched reflected Kpi invariant mass, {bin.lowerPt} <= pT < {bin.upperPt} GeV/c")
             bin.massPtSliceReflected = hProjectionMassReflected
 
@@ -2957,7 +3242,7 @@ class Analysis():
             bin.reflFunc.SetLineColor(r.kRed)
             bin.reflFunc.Draw("same")
             # Text box with info
-            self.textBoxesReflected.append(r.TPaveText(0.6, 0.4, 1., 0.9, "NDC"))
+            self.textBoxesReflected.append(r.TPaveText(0.6, 0.4, 0.85, 0.9, "NDC"))
             self.textBoxesReflected[i].SetName(f"textboxreflected_bin{i}")
             self.textBoxesReflected[i].SetFillColor(0)
             self.textBoxesReflected[i].SetFillStyle(0)
@@ -2980,7 +3265,7 @@ class Analysis():
 class McAnalysis():
     """Class for analysing the MC only"""
 
-    def __init__(self, dirRec, dirGen,
+    def __init__(self, dirRec, dirGen = None,
                  ptBins = [0., 0.75, 1.5, 2.25, 3., 4., 6., 8., 12.], runList = None, 
                  recFileStructure=FileStructures.FLAT,
                  genFileStructure=FileStructures.FLAT,
@@ -3020,29 +3305,45 @@ class McAnalysis():
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
         self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
 
-        # Obtain the main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
+        # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
         fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
         fullNamesGen = ["analysis-asymmetric-pairing/output;1/" + name + "/PtMC_YMC" for name in fullNamesGen]
-        fullNamesEventMult = ["table-maker-m-c/output;1/Event_MCTruth/MultMCNParticlesEta10", "analysis-event-selection/output;1/Event_BeforeCuts/VtxNContribReal"]
-        fullNamesGen += fullNamesEventMult
         fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
         fullNamesGen.append(fullNameHistD0PtYGenerated)
-        self.dictGenHists = get_histograms(self.dirGen, self.runList, fullNamesGen, histogramNamesfileStructure=self.genFileStructure)
+        # Main rec. matched histogram, and the rec. lvl. histograms used for factorized efficiencies later
+        fullNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
+        fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Y_PtFine" for fullNameRec in fullNamesMc]
+        groupNameD0Matched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched
+        fullNameHistD0YPtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Y_PtFine"
+        fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
+        fullNamesMc.append(fullNameHistD0YPtMatched)
+
+        # Get the histograms from the AnalysisResults.root files
+        self.dictMcHists = {}
+        if self.dirGen is not None:
+            self.dictGenHists = get_histograms(self.dirGen, self.runList, fullNamesGen, histogramNamesfileStructure=self.genFileStructure)
+            print("INFO: Separate directory for MC files with generator lvl. histograms was specified")
+        else:
+            fullNamesMc += fullNamesGen
+            self.dictGenHists = self.dictMcHists
+
+        # This dict always contains reco lvl. histograms, sometimes the gen lvl. histograms
+        self.dictMcHists.update(get_histograms(self.dirRec, self.runList, fullNamesMc, histogramNamesfileStructure=self.recFileStructure))
+        self.dictRecHists = self.dictMcHists
+
+        # Fetch the histograms from the dicts
+        self.histD0YPtMatched = self.dictRecHists[fullNameHistD0YPtMatched]
+        self.histD0PtMatched = project_fiducial_acceptance(self.histD0YPtMatched, self.minY, self.maxY)
+        self.histD0PtMatched.SetName("histD0PtMatched")
+        self.histD0PtMatched.SetTitle(f"Reconstructed, matched D0 in {self.minY:.1f} < y < {self.maxY:.1f}")
+
         self.histD0PtYGenerated = self.dictGenHists[fullNameHistD0PtYGenerated]
         # Project out our dy bin from the gen histogram
         lowerYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.minY)
         upperYBin = self.histD0PtYGenerated.GetYaxis().FindBin(self.maxY) - 1
         self.histD0PtGenerated = self.histD0PtYGenerated.ProjectionX(f"projPtMcGen_y_{self.minY}_{self.maxY}", lowerYBin, upperYBin)
-        self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY} < y < {self.maxY}")
-        # Obtain the main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
-        fullNamesRec = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
-        fullNamesRec = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Pt" for fullNameRec in fullNamesRec]
-        fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
-        fullNamesRec.append(fullNameHistD0PtMatched)
-        self.dictRecHists = get_histograms(self.dirRec, self.runList, fullNamesRec, histogramNamesfileStructure=self.recFileStructure)
-        self.histD0PtMatched = self.dictRecHists[fullNameHistD0PtMatched]
-        self.histD0PtMatched.SetName("histD0PtMatched")
-        self.histD0PtMatched.SetTitle("Reconstructed, matched D0")
+        self.histD0PtGenerated.SetTitle(f"Generated D0 after BC cuts in {self.minY:.1f} < y < {self.maxY:.1f}")
+
     
     def calculate_factorized_efficiencies(self):
         Analysis.calculate_factorized_efficiencies(self)
