@@ -806,7 +806,7 @@ def run_by_run_num_candidates(dataDir, runList, lumiFilePath="~/cernbox/singlega
 
     return df
 
-def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="~/cernbox/singlegap/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
+def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
                            mmin=1.81, mmax=1.90, minPt=0., maxPt=12., minY=-0.8, maxY=0.8, text=False, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt', fileStructure=FileStructures.RUNDIRS):
     """
     Create a dataframe containing run-by-run quantities for mc
@@ -842,14 +842,20 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="~/cernbox/singlegap/LHC
                         histRawVtxNContribReal = tmpDir[i][ii]
                     elif iitem.member("fName") == 'VtxNContrib':
                         histRawVtxNContrib = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'MultNTracksPVeta1':
+                        histRawMultNTracksPVeta1 = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'MyIsITSUPCModeHisto':
+                        histRawIsITSUPCMode = tmpDir[i][ii]
             elif item.member("fName") == "Event_AfterCuts":
                 for ii, iitem in enumerate(tmpDir[i]):
                     if iitem.member("fName") == 'VtxNContribReal':
                         histRawAfterCutsVtxNContribReal = tmpDir[i][ii]
             elif item.member("fName") == "EventsMC":
                 for ii, iitem in enumerate(tmpDir[i]):
-                    if iitem.member("fName") == 'MyMcIsNoITSROFBorderMcIsNoTFBorderHisto':
+                    if iitem.member("fName") == 'MyMcIsNoITSROFBorderMcIsNoTFBorderHisto' or iitem.member("fName") == 'MyMcIsNoITSROFBorderRecomputedMcIsNoTFBorderRecomputedHisto':
                         histRawMcIsBorder2d = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'MyMCBcInTFHisto':
+                        histRawMcBcInTF = tmpDir[i][ii]
 
         histVtxNContribReal = histRawVtxNContribReal.to_writable().to_pyroot()
         df.loc[run, 'meanVtxNContribReal'] = histVtxNContribReal.GetMean()
@@ -863,11 +869,78 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="~/cernbox/singlegap/LHC
         df.loc[run, 'meanVtxNContribError'] = histVtxNContrib.GetMeanError()
         df.loc[run, 'nEventsVtxNContribUnder17'] = histVtxNContrib.Integral(1,17)
         df.loc[run, 'nEventsVtxNContribOver16'] = histVtxNContrib.Integral(18,-1)
+        df.loc[run, 'meanMultNTracksPVeta1'] = histRawMultNTracksPVeta1.to_writable().to_pyroot().GetMean()
+        # Count the number of events reconstructed with UPC mode
+        histIsITSUPCMode = histRawIsITSUPCMode.to_writable().to_pyroot()
+        if histIsITSUPCMode.Integral() < histIsITSUPCMode.GetEntries():
+            print(f"WARNING: Run {run} IsITSUPCMode has {histIsITSUPCMode.GetEntries()} entries but the integral is {histIsITSUPCMode.Integral()}!")
+            print(f"Bin 1 content = {histIsITSUPCMode.GetBinContent(1)}")
+            print(f"Bin 2 content = {histIsITSUPCMode.GetBinContent(2)}")
+        df.loc[run, 'nEventsBeforeCutsITSUPCModeFalse'] = histIsITSUPCMode.GetBinContent(1)
+        df.loc[run, 'nEventsBeforeCutsITSUPCModeTrue'] = histIsITSUPCMode.GetBinContent(2)
         # Count the number of events after cuts in this run
         df.loc[run, 'nEventsAfterCuts'] = histRawAfterCutsVtxNContribReal.to_writable().to_pyroot().GetEntries()
         # Count the number of MC events after MC TF and ROF border cuts in this run
         df.loc[run, 'nEventsMC'] = histRawMcIsBorder2d.to_writable().to_pyroot().GetBinContent(2,2)
+        # If present, use the MC BC in TF histogram to figure out the number of BCs and orbits in the TF
+        try:
+            histMcBcInTF = histRawMcBcInTF.to_hist()
+            nz = np.nonzero(histMcBcInTF.values())[0]
+            df.loc[run, 'highestMCBcInTF'] = histMcBcInTF.axes[0].centers[nz[-1]]
+        except:
+            print("Couldn't find MCBcInTF histogram")
 
+        # Get TF and other table-maker level info
+        histRawMcGenId = None
+        histRawRecGenId = None
+        with uproot.open(mcFilepath) as mcTmpFile:
+            tmpDir = mcTmpFile["table-maker-m-c/output;1"]
+        for i, item in enumerate(tmpDir):
+            # TODO: Which cuts should be applied when counting these candidates?
+            if item.member("fName") == "TimeFrameStats":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'TF_NMCCollisions':
+                        histRawTF_NMCCollisions = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'TF_NCollisions':
+                        histRawTF_NCollisions = tmpDir[i][ii]
+            elif item.member("fName") == "Event_MCTruth": 
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MultMCNParticlesEta10':
+                        histRawMcNParticlesEta10 = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'MyGenIdHisto':
+                        histRawMcGenId = tmpDir[i][ii]
+            elif item.member("fName") == "Event_BeforeCuts": # To get apples-to-apples comparison to Event_MCTruth, we need histograms before BC cuts
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'MyGenIdHisto':
+                        histRawRecGenId = tmpDir[i][ii]
+
+        histTF_NMCCollisions = histRawTF_NMCCollisions.to_writable().to_pyroot()
+        df.loc[run, 'meanTFNMCCollisions'] = histTF_NMCCollisions.GetMean()
+        df.loc[run, 'stdDevTFNMCCollisions'] = histTF_NMCCollisions.GetStdDev()
+        histTF_NCollisions = histRawTF_NCollisions.to_writable().to_pyroot()
+        df.loc[run, 'meanTFNCollisions'] = histTF_NCollisions.GetMean()
+        df.loc[run, 'stdDevTFNCollisions'] = histTF_NCollisions.GetStdDev()
+        df.loc[run, 'meanMultMcNParticlesEta10'] = histRawMcNParticlesEta10.to_writable().to_pyroot().GetMean()
+        if histRawRecGenId is not None and histRawMcGenId is not None:
+            histMcGenId = histRawMcGenId.to_writable().to_hist()
+            values = histMcGenId.values()
+            mask = values != 0
+            nonzero_centers = histMcGenId.axes[0].centers[mask]
+            nonzero_values = values[mask]
+            for x, c in zip(nonzero_centers, nonzero_values):
+                df.loc[run, f'nMcEventsGenId_{int(x)}'] = c
+            histRecGenId = histRawRecGenId.to_writable().to_hist()
+            values = histRecGenId.values()
+            mask = values != 0
+            nonzero_centers = histRecGenId.axes[0].centers[mask]
+            nonzero_values = values[mask]
+            for x, c in zip(nonzero_centers, nonzero_values):
+                df.loc[run, f'nRecEventsGenId_{int(x)}'] = c
+        else:
+            print("Couldn't get GenId histograms!")
+
+        # Temporarily remove this until I have valid AnalysisResults files again
+        """
         # Get pair info
         with uproot.open(mcFilepath) as mcTmpFile:
             tmpDir = mcTmpFile["analysis-asymmetric-pairing/output;1"]
@@ -888,12 +961,56 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="~/cernbox/singlegap/LHC
         mcHistGen = mcHistGenRaw.to_hist()
         mcNumGenCandidates = mcHistGen[complex(0, minPt):complex(0, maxPt), complex(0, minY):complex(0, maxY)].sum().value
         df.loc[run, 'mcNumGenCandidates'] = mcNumGenCandidates
+        """
 
     print("Complete!                        ")
 
     return df
 
-def get_run_by_run_data_info(dataDir, runList, lumiFilePath="~/cernbox/singlegap/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
+def get_run_by_run_tablemaker_info(dir, runList, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt'):
+    df = pd.read_csv(irFilePath, sep=' ', names=['runNumber', 'ir'])
+    df['ir'] = df['ir'].astype(float)
+    df['runNumber'] = df['runNumber'].astype(str)
+    df = df[df['runNumber'].isin(runList)]
+    df = df.set_index('runNumber')
+
+    for irun, run in enumerate(runList):
+        print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
+        dataFilepath = f"{dir}/{run}/mergedAnalysisResults.root"
+
+        with uproot.open(dataFilepath) as dataTmpFile:
+            tmpDir = dataTmpFile["table-maker/output;1"]
+        for i, item in enumerate(tmpDir):
+            if item.member("fName") == "Event_BeforeCuts":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'VtxNContrib':
+                        histRawVtxNContribBeforeCuts = tmpDir[i][ii]
+            if item.member("fName") == "Event_AfterCuts":
+                for ii, iitem in enumerate(tmpDir[i]):
+                    if iitem.member("fName") == 'VtxNContrib':
+                        histRawVtxNContribAfterCuts = tmpDir[i][ii]
+
+        with uproot.open(dataFilepath) as file:
+            histRawLumi = file["eventselection-run3/luminosity;1/hLumiTCE"]
+            histRawColCounterAcc = file["eventselection-run3/eventselection;1/hColCounterAcc"]
+        histLumi = histRawLumi.to_writable().to_pyroot()
+        df.loc[run, 'lumiTCE'] = histLumi.GetEntries()
+        histColCounterAcc = histRawColCounterAcc.to_writable().to_pyroot()
+        df.loc[run, 'colCounterAcc'] = histColCounterAcc.GetEntries()
+
+        histVtxNContribBeforeCuts = histRawVtxNContribBeforeCuts.to_writable().to_pyroot()
+        df.loc[run, 'meanVtxNContribBeforeCuts'] = histVtxNContribBeforeCuts.GetMean()
+        df.loc[run, 'nEventsVtxNContribUnder16BeforeCuts'] = histVtxNContribBeforeCuts.Integral(1,16)
+        df.loc[run, 'nEventsVtxNContribOver15BeforeCuts'] = histVtxNContribBeforeCuts.Integral(17,-1)
+        histVtxNContribAfterCuts = histRawVtxNContribAfterCuts.to_writable().to_pyroot()
+        df.loc[run, 'meanVtxNContribAfterCuts'] = histVtxNContribAfterCuts.GetMean()
+        df.loc[run, 'nEventsVtxNContribUnder16AfterCuts'] = histVtxNContribAfterCuts.Integral(1,16)
+        df.loc[run, 'nEventsVtxNContribOver15AfterCuts'] = histVtxNContribAfterCuts.Integral(17,-1)
+
+    return df
+
+
+def get_run_by_run_data_info(dataDir, runList, lumiFilePath="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root",
                              mmin=1.81, mmax=1.90, minPt=0., maxPt=12., minY=-0.8, maxY=0.8, text=False, irFilePath='~/cernbox/notebooks/pyD0/interactionRate.txt', fileStructure=FileStructures.RUNDIRS):
     """
     Create a dataframe containing run-by-run quantities for data
@@ -906,10 +1023,34 @@ def get_run_by_run_data_info(dataDir, runList, lumiFilePath="~/cernbox/singlegap
     df = df.set_index('runNumber')
 
     lumiFile = r.TFile.Open(lumiFilePath)
-    lumiHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTCEafterBCcuts')
+    lumiTCEHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTCEafterBCcuts')
+    lumiTVXHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiTVXafterBCcuts')
+    lumiZNCHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
+    counterTCEHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hCounterTCEafterBCcuts')
+    counterTVXHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hCounterTVXafterBCcuts')
+    counterZNCHist = lumiFile.Get('eventselection-run3').Get('luminosity').Get('hCounterZNCafterBCcuts')
+    colCounterAllHist = lumiFile.Get('eventselection-run3').Get('eventselection').Get('hColCounterAll')
+    colCounterTVXHist = lumiFile.Get('eventselection-run3').Get('eventselection').Get('hColCounterTVX')
+    colCounterAccHist = lumiFile.Get('eventselection-run3').Get('eventselection').Get('hColCounterAcc')
     for run in runList:
-        lumi = lumiHist.GetBinContent(lumiHist.GetXaxis().FindBin(run))
-        df.loc[run, 'lumi'] = lumi
+        lumiTCE = lumiTCEHist.GetBinContent(lumiTCEHist.GetXaxis().FindBin(run))
+        df.loc[run, 'lumiTCE'] = lumiTCE
+        lumiTVX = lumiTVXHist.GetBinContent(lumiTVXHist.GetXaxis().FindBin(run))
+        df.loc[run, 'lumiTVX'] = lumiTVX
+        lumiZNC = lumiZNCHist.GetBinContent(lumiZNCHist.GetXaxis().FindBin(run))
+        df.loc[run, 'lumiZNC'] = lumiZNC
+        counterTCE = counterTCEHist.GetBinContent(counterTCEHist.GetXaxis().FindBin(run))
+        df.loc[run, 'counterTCE'] = counterTCE
+        counterTVX = counterTVXHist.GetBinContent(counterTVXHist.GetXaxis().FindBin(run))
+        df.loc[run, 'counterTVX'] = counterTVX
+        counterZNC = counterZNCHist.GetBinContent(counterZNCHist.GetXaxis().FindBin(run))
+        df.loc[run, 'counterZNC'] = counterZNC
+        colCounterAll = colCounterAllHist.GetBinContent(colCounterAllHist.GetXaxis().FindBin(run))
+        df.loc[run, 'nEventsColCounterAll'] = colCounterAll
+        colCounterTVX = colCounterTVXHist.GetBinContent(colCounterTVXHist.GetXaxis().FindBin(run))
+        df.loc[run, 'nEventsColCounterTVX'] = colCounterTVX
+        colCounterAcc = colCounterAccHist.GetBinContent(colCounterAccHist.GetXaxis().FindBin(run))
+        df.loc[run, 'nEventsColCounterAcc'] = colCounterAcc
 
     for irun, run in enumerate(runList):
         print(f"Processing run {run} ({irun+1}/{len(runList)})...            ", end='\r')
@@ -931,6 +1072,10 @@ def get_run_by_run_data_info(dataDir, runList, lumiFilePath="~/cernbox/singlegap
                         histRawVtxNContrib = tmpDir[i][ii]
                     elif iitem.member("fName") == 'MyAmpFT0A_AmpFT0CHisto':
                         histRawFT0 = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'IsITSUPCMode':
+                        histRawIsITSUPCMode = tmpDir[i][ii]
+                    elif iitem.member("fName") == 'MyIsITSUPCModeVtxNContribHisto':
+                        histRawIsITSUPCModeVtxNContrib = tmpDir[i][ii]
 
         histVtxNContribReal = histRawVtxNContribReal.to_writable().to_pyroot()
         df.loc[run, 'meanVtxNContribReal'] = histVtxNContribReal.GetMean()
@@ -942,12 +1087,26 @@ def get_run_by_run_data_info(dataDir, runList, lumiFilePath="~/cernbox/singlegap
         histVtxNContrib = histRawVtxNContrib.to_writable().to_pyroot()
         df.loc[run, 'meanVtxNContrib'] = histVtxNContrib.GetMean()
         df.loc[run, 'meanVtxNContribError'] = histVtxNContrib.GetMeanError()
-        df.loc[run, 'nEventsVtxNContribUnder17'] = histVtxNContrib.Integral(1,17)
+        df.loc[run, 'nEventsVtxNContribUnder16'] = histVtxNContrib.Integral(1,16)
         df.loc[run, 'nEventsVtxNContribOver16'] = histVtxNContrib.Integral(18,-1)
         # Count the number of events in specific ranges of FT0A or FT0C amplitudes
         histFT0 = histRawFT0.to_writable().to_pyroot()
         df.loc[run, 'nEventsFT0AAbove100'] = histFT0.Integral(101, -1, 1, -1)
         df.loc[run, 'nEventsFT0CAbove50'] = histFT0.Integral(1, -1, 51, -1)
+        # Count the number of events reconstructed with UPC mode
+        histIsITSUPCMode = histRawIsITSUPCMode.to_writable().to_pyroot()
+        if histIsITSUPCMode.Integral() < histIsITSUPCMode.GetEntries():
+            print(f"WARNING: Run {run} IsITSUPCMode has {histIsITSUPCMode.GetEntries()} entries but the integral is {histIsITSUPCMode.Integral()}!")
+            print(f"Bin 1 content = {histIsITSUPCMode.GetBinContent(1)}")
+            print(f"Bin 2 content = {histIsITSUPCMode.GetBinContent(2)}")
+        df.loc[run, 'nEventsAfterCutsITSUPCModeFalse'] = histIsITSUPCMode.GetBinContent(1)
+        df.loc[run, 'nEventsAfterCutsITSUPCModeTrue'] = histIsITSUPCMode.GetBinContent(2)
+
+        histIsITSUPCModeVtxNContrib = histRawIsITSUPCModeVtxNContrib.to_writable().to_pyroot()
+        df.loc[run, 'nEventsVtxNContribUnder16ITSUPCModeFalse'] = histIsITSUPCModeVtxNContrib.Integral(1,16,1,1)
+        df.loc[run, 'nEventsVtxNContribOver16ITSUPCModeFalse'] = histIsITSUPCModeVtxNContrib.Integral(18,-1,1,1)
+        df.loc[run, 'nEventsVtxNContribUnder16ITSUPCModeTrue'] = histIsITSUPCModeVtxNContrib.Integral(1,16,2,2)
+        df.loc[run, 'nEventsVtxNContribOver16ITSUPCModeTrue'] = histIsITSUPCModeVtxNContrib.Integral(18,-1,2,2)
 
         # Get pair info
         with uproot.open(dataFilepath) as dataTmpFile:
@@ -1722,6 +1881,7 @@ class PtBin():
         if hasattr(self, 'nominalFitResult'):
             self.legend = r.TLegend(0.15, 0.15, 0.4, 0.3)
             self.nominalFitResult.fitFunc.Draw()
+            self.nominalFitResult.fitFunc.SetTitle(f"{self.lowerPt} < p_{{T}} < {self.upperPt} GeV/c")
             self.legend.AddEntry(self.nominalFitResult.fitFunc, "Total fit function")
             self.nominalFitResult.signalFunc.Draw("same LF2")
             self.legend.AddEntry(self.nominalFitResult.signalFunc, "Signal")
@@ -3282,7 +3442,7 @@ class McAnalysis():
         cutNames = {
             "kaonLegCutName" : "kaonPIDTPCTOFpTDCAz",
             "pionLegCutName" : "pionNoPIDpTDCAz",
-            "pairCutName"    : "PtDepTauxyzprojCut"
+            "pairCutName"    : "PtDepLxyCosPointingAngleCut"
         }
         cutNames.update(kwargs)
         self.kaonLegCutName = cutNames["kaonLegCutName"]
