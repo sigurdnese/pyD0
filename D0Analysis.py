@@ -24,6 +24,8 @@ RUNLIST_PASS4_UPCSETTINGS_NO = ['544123', '544490', '544614', '544652', '544767'
 
 DEFAULT_RUNLIST_PASS5 = ['545312', '545296', '545294', '545291', '545249', '545223', '545210', '545185', '545064', '545063', '545047', '545044', '545009', '544992', '544968', '544964', '544963', '544961', '544947', '544931', '544917', '544914', '544913', '544896', '544887', '544886', '544868', '544813', '544797', '544794', '544767', '544754', '544742', '544739', '544696', '544694', '544693', '544692', '544674', '544672', '544653', '544652', '544640', '544614', '544585', '544583', '544582', '544580', '544568', '544567', '544565', '544564', '544551', '544550', '544549', '544548', '544518', '544515', '544514', '544512', '544511', '544510', '544508', '544492', '544491', '544490', '544477', '544476', '544475', '544474', '544454', '544392', '544391', '544390', '544389', '544185', '544184', '544124', '544123', '544122', '544116', '544098', '544032', '544028', '544013', '545066', '545295']
 
+RUNLIST_PASS5_CBT_HADRONPID = ['544614', '544640', '544674', '544754', '544767', '544868', '544886', '544887', '544896', '544913', '544914', '544917', '544931', '544947', '544961', '544963', '544964', '544968', '544992', '545009', '545044', '545047', '545063', '545064', '545066', '545185', '545210', '545223', '545249', '545291', '545294', '545295', '545296', '545312', '544813', '544028', '544032', '544013', '544794', '544797', '544098', '544116', '544122', '544123', '544124', '544184', '544185', '544389', '544390', '544391', '544392', '544454', '544474', '544475', '544476', '544477', '544490', '544491', '544492', '544508', '544510', '544511', '544548', '544549', '544550', '544551', '544564', '544565', '544567', '544568', '544580', '544582', '544583', '544585', '544652', '544653', '544692', '544693', '544694', '544696', '544739', '544742']
+
 class FileStructures(Enum):
     RUNDIRS = auto()
     FLAT = auto()
@@ -155,7 +157,7 @@ def build_histograms_map(filePath):
 
     return histogramsMap
 
-def get_histograms_from_file(filePath, fullHistogramNames):
+def get_histograms_from_file(filePath, fullHistogramNames, outputFormat='pyroot'):
     splitHistNames = [s.split("/") for s in fullHistogramNames] 
     namesDict = {}
     for irow, (row, fullName) in enumerate(zip(splitHistNames, fullHistogramNames)):
@@ -198,8 +200,13 @@ def get_histograms_from_file(filePath, fullHistogramNames):
                                 fullName = dirName + '/' + item.member("fName") + '/' + iitem.member("fName")
                                 tmpHist = dir[i][ii]
                                 tmpHistWritable = tmpHist.to_writable()
-                                tmpHistPr = tmpHistWritable.to_pyroot()
-                                histograms[fullName] = tmpHistPr
+                                if outputFormat == 'pyroot':
+                                    tmpHistOut = tmpHistWritable.to_pyroot()
+                                elif outputFormat == 'hist':
+                                    tmpHistOut = tmpHistWritable.to_hist()
+                                else:
+                                    raise Exception("outputFormat not recognized!")
+                                histograms[fullName] = tmpHistOut
 
     elif depth == 2:
             with uproot.open(filePath) as file:
@@ -210,21 +217,31 @@ def get_histograms_from_file(filePath, fullHistogramNames):
                             fullName = dirName + '/' + item.member("fName")
                             tmpHist = dir[i]
                             tmpHistWritable = tmpHist.to_writable()
-                            tmpHistPr = tmpHistWritable.to_pyroot()
-                            histograms[fullName] = tmpHistPr
+                            if outputFormat == 'pyroot':
+                                tmpHistOut = tmpHistWritable.to_pyroot()
+                            elif outputFormat == 'hist':
+                                tmpHistOut = tmpHistWritable.to_hist()
+                            else:
+                                raise Exception("outputFormat not recognized!")
+                            histograms[fullName] = tmpHistOut
 
     elif depth == 1:
         with uproot.open(filePath) as file:
             for fullName in namesDict.keys():
                 tmpHist = file[fullName]
                 tmpHistWritable = tmpHist.to_writable()
-                tmpHistPr = tmpHistWritable.to_pyroot()
+                if outputFormat == 'pyroot':
+                    tmpHistOut = tmpHistWritable.to_pyroot()
+                elif outputFormat == 'hist':
+                    tmpHistOut = tmpHistWritable.to_hist()
+                else:
+                    raise Exception("outputFormat not recognized!")
                 if fullName not in histograms:
-                    histograms[fullName] = tmpHistPr
+                    histograms[fullName] = tmpHistOut
                 else:
                     # This is a special case for lumi histograms, which each have their own axis labels per run.
                     # ROOT will use TH1.Merge instead, this seems to give the expected outcome
-                    histograms[fullName].Add(tmpHistPr)
+                    histograms[fullName].Add(tmpHistOut)
 
     return histograms
 
@@ -832,6 +849,8 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="/media/sigurd/T7/analys
             mcFilepath = f"{mcDir}/{run}/AnalysisResults.root"
 
         # Get event info
+        histRawIsITSUPCMode = None
+        histRawMcBcInTF = None
         with uproot.open(mcFilepath) as mcTmpFile:
             tmpDir = mcTmpFile["analysis-event-selection/output;1"]
         for i, item in enumerate(tmpDir):
@@ -871,28 +890,29 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="/media/sigurd/T7/analys
         df.loc[run, 'nEventsVtxNContribOver16'] = histVtxNContrib.Integral(18,-1)
         df.loc[run, 'meanMultNTracksPVeta1'] = histRawMultNTracksPVeta1.to_writable().to_pyroot().GetMean()
         # Count the number of events reconstructed with UPC mode
-        histIsITSUPCMode = histRawIsITSUPCMode.to_writable().to_pyroot()
-        if histIsITSUPCMode.Integral() < histIsITSUPCMode.GetEntries():
-            print(f"WARNING: Run {run} IsITSUPCMode has {histIsITSUPCMode.GetEntries()} entries but the integral is {histIsITSUPCMode.Integral()}!")
-            print(f"Bin 1 content = {histIsITSUPCMode.GetBinContent(1)}")
-            print(f"Bin 2 content = {histIsITSUPCMode.GetBinContent(2)}")
-        df.loc[run, 'nEventsBeforeCutsITSUPCModeFalse'] = histIsITSUPCMode.GetBinContent(1)
-        df.loc[run, 'nEventsBeforeCutsITSUPCModeTrue'] = histIsITSUPCMode.GetBinContent(2)
+        if histRawIsITSUPCMode is not None:
+            histIsITSUPCMode = histRawIsITSUPCMode.to_writable().to_pyroot()
+            if histIsITSUPCMode.Integral() < histIsITSUPCMode.GetEntries():
+                print(f"WARNING: Run {run} IsITSUPCMode has {histIsITSUPCMode.GetEntries()} entries but the integral is {histIsITSUPCMode.Integral()}!")
+                print(f"Bin 1 content = {histIsITSUPCMode.GetBinContent(1)}")
+                print(f"Bin 2 content = {histIsITSUPCMode.GetBinContent(2)}")
+            df.loc[run, 'nEventsBeforeCutsITSUPCModeFalse'] = histIsITSUPCMode.GetBinContent(1)
+            df.loc[run, 'nEventsBeforeCutsITSUPCModeTrue'] = histIsITSUPCMode.GetBinContent(2)
         # Count the number of events after cuts in this run
         df.loc[run, 'nEventsAfterCuts'] = histRawAfterCutsVtxNContribReal.to_writable().to_pyroot().GetEntries()
         # Count the number of MC events after MC TF and ROF border cuts in this run
         df.loc[run, 'nEventsMC'] = histRawMcIsBorder2d.to_writable().to_pyroot().GetBinContent(2,2)
         # If present, use the MC BC in TF histogram to figure out the number of BCs and orbits in the TF
-        try:
+        if histRawMcBcInTF is not None:
             histMcBcInTF = histRawMcBcInTF.to_hist()
             nz = np.nonzero(histMcBcInTF.values())[0]
             df.loc[run, 'highestMCBcInTF'] = histMcBcInTF.axes[0].centers[nz[-1]]
-        except:
-            print("Couldn't find MCBcInTF histogram")
 
         # Get TF and other table-maker level info
         histRawMcGenId = None
         histRawRecGenId = None
+        histRawTF_NMCCollisions = None
+        histRawTF_NCollisions = None
         with uproot.open(mcFilepath) as mcTmpFile:
             tmpDir = mcTmpFile["table-maker-m-c/output;1"]
         for i, item in enumerate(tmpDir):
@@ -914,13 +934,15 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="/media/sigurd/T7/analys
                     if iitem.member("fName") == 'MyGenIdHisto':
                         histRawRecGenId = tmpDir[i][ii]
 
-        histTF_NMCCollisions = histRawTF_NMCCollisions.to_writable().to_pyroot()
-        df.loc[run, 'meanTFNMCCollisions'] = histTF_NMCCollisions.GetMean()
-        df.loc[run, 'stdDevTFNMCCollisions'] = histTF_NMCCollisions.GetStdDev()
-        histTF_NCollisions = histRawTF_NCollisions.to_writable().to_pyroot()
-        df.loc[run, 'meanTFNCollisions'] = histTF_NCollisions.GetMean()
-        df.loc[run, 'stdDevTFNCollisions'] = histTF_NCollisions.GetStdDev()
-        df.loc[run, 'meanMultMcNParticlesEta10'] = histRawMcNParticlesEta10.to_writable().to_pyroot().GetMean()
+        if histRawTF_NMCCollisions is not None:
+            histTF_NMCCollisions = histRawTF_NMCCollisions.to_writable().to_pyroot()
+            df.loc[run, 'meanTFNMCCollisions'] = histTF_NMCCollisions.GetMean()
+            df.loc[run, 'stdDevTFNMCCollisions'] = histTF_NMCCollisions.GetStdDev()
+        if histRawTF_NCollisions is not None:
+            histTF_NCollisions = histRawTF_NCollisions.to_writable().to_pyroot()
+            df.loc[run, 'meanTFNCollisions'] = histTF_NCollisions.GetMean()
+            df.loc[run, 'stdDevTFNCollisions'] = histTF_NCollisions.GetStdDev()
+            df.loc[run, 'meanMultMcNParticlesEta10'] = histRawMcNParticlesEta10.to_writable().to_pyroot().GetMean()
         if histRawRecGenId is not None and histRawMcGenId is not None:
             histMcGenId = histRawMcGenId.to_writable().to_hist()
             values = histMcGenId.values()
@@ -936,8 +958,6 @@ def get_run_by_run_mc_info(mcDir, runList, lumiFilePath="/media/sigurd/T7/analys
             nonzero_values = values[mask]
             for x, c in zip(nonzero_centers, nonzero_values):
                 df.loc[run, f'nRecEventsGenId_{int(x)}'] = c
-        else:
-            print("Couldn't get GenId histograms!")
 
         # Temporarily remove this until I have valid AnalysisResults files again
         """
@@ -1102,11 +1122,14 @@ def get_run_by_run_data_info(dataDir, runList, lumiFilePath="/media/sigurd/T7/an
         df.loc[run, 'nEventsAfterCutsITSUPCModeFalse'] = histIsITSUPCMode.GetBinContent(1)
         df.loc[run, 'nEventsAfterCutsITSUPCModeTrue'] = histIsITSUPCMode.GetBinContent(2)
 
-        histIsITSUPCModeVtxNContrib = histRawIsITSUPCModeVtxNContrib.to_writable().to_pyroot()
-        df.loc[run, 'nEventsVtxNContribUnder16ITSUPCModeFalse'] = histIsITSUPCModeVtxNContrib.Integral(1,16,1,1)
-        df.loc[run, 'nEventsVtxNContribOver16ITSUPCModeFalse'] = histIsITSUPCModeVtxNContrib.Integral(18,-1,1,1)
-        df.loc[run, 'nEventsVtxNContribUnder16ITSUPCModeTrue'] = histIsITSUPCModeVtxNContrib.Integral(1,16,2,2)
-        df.loc[run, 'nEventsVtxNContribOver16ITSUPCModeTrue'] = histIsITSUPCModeVtxNContrib.Integral(18,-1,2,2)
+        try:
+            histIsITSUPCModeVtxNContrib = histRawIsITSUPCModeVtxNContrib.to_writable().to_pyroot()
+            df.loc[run, 'nEventsVtxNContribUnder16ITSUPCModeFalse'] = histIsITSUPCModeVtxNContrib.Integral(1,16,1,1)
+            df.loc[run, 'nEventsVtxNContribOver16ITSUPCModeFalse'] = histIsITSUPCModeVtxNContrib.Integral(18,-1,1,1)
+            df.loc[run, 'nEventsVtxNContribUnder16ITSUPCModeTrue'] = histIsITSUPCModeVtxNContrib.Integral(1,16,2,2)
+            df.loc[run, 'nEventsVtxNContribOver16ITSUPCModeTrue'] = histIsITSUPCModeVtxNContrib.Integral(18,-1,2,2)
+        except:
+            print("WARNING: MyIsITSUPCModeVtxNContribHisto was not found in file!")
 
         # Get pair info
         with uproot.open(dataFilepath) as dataTmpFile:
