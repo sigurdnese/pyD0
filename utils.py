@@ -384,6 +384,7 @@ def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/an
     """
     lumi_file = r.TFile.Open("/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root")
     lumi_hist_znc = lumi_file.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
+    total_lumi = lumi_hist_znc.Integral()
 
     nrows = int(np.ceil(len(run_list)/ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(scale*21*ncols/5, scale*3*nrows), squeeze=False)
@@ -443,6 +444,7 @@ def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/an
     for k, old_i in enumerate(idx):
         axes_flattened[old_i].set_position(positions[k])
 
+    print(f"Total lumi between between {ir_0:.2f} kHz and {ir_1:.2f} kHz: {Ls.sum():.2f} 1/µb ({100*Ls.sum()/total_lumi:.2f}% of the total {total_lumi:.2f} 1/µb in the runlist)")
     plt.show()
 
 def root_to_hist(hroot):
@@ -462,22 +464,36 @@ def root_to_hist(hroot):
 
     return h
 
-def equal_stat_y_slices(h2, n_slices, start_bin=1):
+def equal_stat_y_slices(h2, n_slices, start_bin=1, end_bin=None):
     """
     h2: TH2 (e.g. TH2F)
     n_slices: desired number of Y slices with equal total entries (over X)
+    start_bin: first Y bin to include (1-based, inclusive, no under/overflow)
+    end_bin:   last Y bin to include (1-based, inclusive, no under/overflow).
+               If None, defaults to nbins_y.
 
     Returns:
         A list of (ybin_lo, ybin_hi) tuples (1-based, inclusive),
-        not using underflow/overflow bins.
+        restricted to Y bins [start_bin .. end_bin].
     """
     nbins_x = h2.GetNbinsX()
     nbins_y = h2.GetNbinsY()
 
-    # 1) Sum over X for each Y bin (start_bin..nbins_y)
+    if end_bin is None:
+        end_bin = nbins_y
+
+    # Sanity checks
+    if start_bin < 1 or start_bin > nbins_y:
+        raise ValueError(f"start_bin={start_bin} out of range [1, {nbins_y}]")
+    if end_bin < 1 or end_bin > nbins_y:
+        raise ValueError(f"end_bin={end_bin} out of range [1, {nbins_y}]")
+    if start_bin > end_bin:
+        raise ValueError(f"start_bin={start_bin} must be <= end_bin={end_bin}")
+
+    # 1) Sum over X for each Y bin from start_bin .. end_bin
     per_y = []
     total = 0.0
-    for j in range(start_bin, nbins_y + 1):
+    for j in range(start_bin, end_bin + 1):
         s = 0.0
         for i in range(1, nbins_x + 1):
             s += h2.GetBinContent(i, j)
@@ -485,9 +501,11 @@ def equal_stat_y_slices(h2, n_slices, start_bin=1):
         total += s
 
     if total <= 0:
-        raise RuntimeError("Histogram is empty (no entries in in-range Y bins).")
+        raise RuntimeError(
+            f"Histogram has no entries in Y bins [{start_bin}..{end_bin}]."
+        )
 
-    # 2) Cumulative along Y
+    # 2) Cumulative along Y within [start_bin..end_bin]
     cumulative = []
     run = 0.0
     for s in per_y:
@@ -497,21 +515,19 @@ def equal_stat_y_slices(h2, n_slices, start_bin=1):
     target_per_slice = total / float(n_slices)
 
     # 3) Find upper-bin edge for each slice (except the last)
-    upper_edges = []  # list of Y-bin indices (start_bin..nbins_y) as upper edges
-    k = 1  # we’re looking for k * target_per_slice
-    for idx in range(len(per_y)):
-        j = start_bin + idx
+    upper_edges = []  # Y-bin indices (1..nbins_y) as upper edges
+    k = 1  # we look for k * target_per_slice
+    for idx in range(len(per_y)):          # idx is 0..(end_bin-start_bin)
+        j = start_bin + idx                # real bin number
         if k >= n_slices:
             break
         if cumulative[idx] >= k * target_per_slice:
             upper_edges.append(j)
             k += 1
 
-    # Make sure we have n_slices-1 boundaries, then add last at nbins_y
-    # If some were missed (e.g. lots of empty bins), just don’t add extras;
-    # last slice will absorb remaining bins.
+    # At most n_slices-1 boundaries; last boundary forced at end_bin
     upper_edges = upper_edges[:n_slices-1]
-    upper_edges.append(nbins_y)
+    upper_edges.append(end_bin)
 
     # 4) Convert upper edges into (lo, hi) bin ranges
     slices = []

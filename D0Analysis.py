@@ -31,7 +31,7 @@ class FileStructures(Enum):
     RUNDIRS = auto()
     FLAT = auto()
 
-def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, norm_by='lumi', min_ir=0):
+def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, norm_by='lumi', min_ir=0, max_ir=None):
     """
     Obtain D0 yield per ZNC luminosity or number of selected events as a function of ZNC hadronic interaction rate
     IR bins are chosen by equally distributing the D0 candidates among n_ir_bins bins along the IR axis
@@ -46,8 +46,9 @@ def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, 
     # Get IR bin edges
     if bin_edges_ir is None:
         min_bin = hist_m_ir.GetYaxis().FindBin(min_ir)
-        print(f"Finding IR bin edges based on equal division of D0 candidates, starting at bin {min_bin}")
-        bin_edges_ir = utils.equal_stat_y_slices(hist_m_ir, n_ir_bins, min_bin)
+        max_bin = hist_m_ir.GetYaxis().FindBin(max_ir) - 1
+        print(f"Finding IR bin edges based on equal division of D0 candidates between bin {min_bin} and {max_bin}")
+        bin_edges_ir = utils.equal_stat_y_slices(hist_m_ir, n_ir_bins, min_bin, max_bin)
     for i, (low, high) in enumerate(bin_edges_ir):
         print(f"Range {i+1}: bin {low} -> {high}; IR={hist_m_ir.GetYaxis().GetBinLowEdge(low):.2f} kHz -> {hist_m_ir.GetYaxis().GetBinLowEdge(high):.2f} kHz")
         integral = hist_m_ir.Integral(binx1=1, binx2=hist_m_ir.GetXaxis().GetNbins(), biny1=low, biny2=high)
@@ -181,7 +182,7 @@ def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, 
 
     return result
 
-def selected_events_per_lumi_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, min_ir=0):
+def selected_events_per_lumi_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, min_ir=0, max_ir=None):
     """
     Obtain D0 yield per ZNC luminosity or number of selected events as a function of ZNC hadronic interaction rate
     IR bins are chosen by equally distributing the D0 candidates among n_ir_bins bins along the IR axis
@@ -195,8 +196,9 @@ def selected_events_per_lumi_ir(runlist, n_ir_bins=None, hist_dict=None, data_di
     # Even if we don't use the D0 yield, base the IR bins on the D0 candidate statistics
     if bin_edges_ir is None:
         min_bin = hist_m_ir.GetYaxis().FindBin(min_ir)
-        print(f"Finding IR bin edges based on equal division of D0 candidates, starting at bin {min_bin}")
-        bin_edges_ir = utils.equal_stat_y_slices(hist_m_ir, n_ir_bins, min_bin)
+        max_bin = hist_m_ir.GetYaxis().FindBin(max_ir) - 1
+        print(f"Finding IR bin edges based on equal division of D0 candidates between bin {min_bin} and {max_bin}")
+        bin_edges_ir = utils.equal_stat_y_slices(hist_m_ir, n_ir_bins, min_bin, max_bin)
     for i, (low, high) in enumerate(bin_edges_ir):
         print(f"Range {i+1}: bin {low} -> {high}; IR={hist_m_ir.GetYaxis().GetBinLowEdge(low):.2f} kHz -> {hist_m_ir.GetYaxis().GetBinLowEdge(high):.2f} kHz")
         integral = hist_m_ir.Integral(binx1=1, binx2=hist_m_ir.GetXaxis().GetNbins(), biny1=low, biny2=high)
