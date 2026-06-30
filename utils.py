@@ -3,6 +3,8 @@ import numpy as np
 from array import array
 from scipy.stats import poisson
 import matplotlib.pyplot as plt
+from boost_histogram import axis
+import hist
 
 defaultITSROFlength = 14821e-9 # seconds
 
@@ -339,6 +341,9 @@ def integrate_between_ys(xs, ys, y0, y1):
     return total, np.array(x_cross), np.array(y_cross)
 
 def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root", do_print=False):
+    """
+    ir_bin_edges: kHz
+    """
     print(f"Processing {len(run_list)} runs...")
     lumi_file = r.TFile.Open("/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root")
     lumi_hist_znc = lumi_file.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
@@ -347,14 +352,15 @@ def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/
     hist.GetXaxis().SetTitle('ZNC hadronic interaction rate (Hz)')
     hist.GetYaxis().SetTitle('ZNC luminosity (1/µb)')
     for i, (ir_0, ir_1) in enumerate(zip(ir_bin_edges[:-1], ir_bin_edges[1:])):
-        print(f"--- {ir_0:.0f} < IR < {ir_1:.0f} Hz ---")
+        print(f"--- {ir_0:.3f} < IR < {ir_1:.3f} kHz ---")
         L = 0
         n_contributing_runs = 0
         for run in run_list:
             data = np.genfromtxt(f"/home/sigurd/cernbox/notebooks/pyD0/interactionRates/{run}.txt", names=True)
             ts = data['timestamp_ms']
-            irs = data['interaction_rate']
             ts = (ts - ts[0])/1000 # Convert to seconds from SOR
+            irs = data['interaction_rate']
+            irs = irs/1000 # Convert from Hz to kHz
             
             integrated_lumi = lumi_hist_znc.GetBinContent(lumi_hist_znc.GetXaxis().FindBin(run))
             factor = integrated_lumi / np.trapezoid(irs, ts)
@@ -365,24 +371,24 @@ def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/
             if tmp_L > 0:
                 n_contributing_runs += 1
                 if do_print:
-                    print(f"  Run {run} has {tmp_L:.3f} 1/µb of luminosity between {ir_0} Hz and {ir_1} Hz")
+                    print(f"  Run {run} has {tmp_L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
             L += tmp_L
 
-        print(f"  {n_contributing_runs} runs contributed in total {L:.3f} 1/µb of luminosity between {ir_0} Hz and {ir_1} Hz")
+        print(f"  {n_contributing_runs} runs contributed in total {L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
         hist.SetBinContent(i+1, L)
     return hist
 
-def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root", do_print=False, y_axis='lumi'):
+def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root", do_print=False, y_axis='lumi', ncols=5, scale=1.0):
     """
     For every run in run_list, illustrate the contribution to the luminosity between interaction rate ir_0 to ir_1
     """
     lumi_file = r.TFile.Open("/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root")
     lumi_hist_znc = lumi_file.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
 
-    ncols = 5
     nrows = int(np.ceil(len(run_list)/ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(21, 3*nrows))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(scale*21*ncols/5, scale*3*nrows), squeeze=False)
     run_list.sort() # Plot in ascending order of run number
+    Ls = np.zeros_like(run_list, dtype=float)
     for i, run in enumerate(run_list):
         row = int(np.floor(i/ncols))
         col = i%ncols
@@ -390,8 +396,9 @@ def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/an
 
         data = np.genfromtxt(f"/home/sigurd/cernbox/notebooks/pyD0/interactionRates/{run}.txt", names=True)
         ts = data['timestamp_ms']
-        irs = data['interaction_rate']
         ts = (ts - ts[0])/1000 # Convert to seconds from SOR
+        irs = data['interaction_rate']
+        irs = irs/1000 # Convert Hz to kHz
 
         N, ts_crossings, ir_crossings = integrate_between_ys(ts, irs, ir_0, ir_1)
 
@@ -405,7 +412,7 @@ def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/an
             ax.axhline(ir_1 * factor * 1000, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
         elif y_axis == 'ir':
             ax.plot(ts, irs, '-')
-            ax.set_ylabel("ZNC hadronic interaction rate (Hz)")
+            ax.set_ylabel("ZNC hadronic interaction rate (kHz)")
             ax.axhline(ir_0, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
             ax.axhline(ir_1, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
         else:
@@ -421,10 +428,97 @@ def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/an
                 print(f"{t0} -> {t1}")
             ax.axvspan(t0, t1, alpha=0.5, color='green', lw=0)
         L = factor * N
+        Ls[i] = L
         if do_print:
-            print(f"Run {run} has {L:.3f} 1/µb of luminosity between {ir_0} Hz and {ir_1} Hz")
+            print(f"Run {run} has {L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
         ax.text(0.05, 0.12, f"Contribution = {L:.2f} 1/µb", ha='left', va='bottom', transform=ax.transAxes)
 
-    plt.tight_layout()
+    fig.tight_layout()
+
+    # Now that we have the list of contributions, order the plots in descending order of contributing lumi
+    idx = np.argsort(Ls)[::-1]
+    axes_flattened = axes.ravel()
+    positions = [ax.get_position() for ax in axes_flattened]
+    axes_reordered = axes_flattened[idx]
+    for k, old_i in enumerate(idx):
+        axes_flattened[old_i].set_position(positions[k])
+
     plt.show()
 
+def root_to_hist(hroot):
+    nbins = hroot.GetNbinsX()
+    edges = np.array([hroot.GetBinLowEdge(i) for i in range(1, nbins + 2)])
+    counts = np.array([hroot.GetBinContent(i) for i in range(1, nbins + 1)])
+    errors = np.array([hroot.GetBinError(i) for i in range(1, nbins + 1)])
+
+    h = hist.Hist(
+        hist.axis.Variable(edges, name=hroot.GetName(), label=hroot.GetTitle()),
+        storage=hist.storage.Weight()
+    )
+
+    view = h.view()
+    view.value[...] = counts
+    view.variance[...] = errors**2
+
+    return h
+
+def equal_stat_y_slices(h2, n_slices, start_bin=1):
+    """
+    h2: TH2 (e.g. TH2F)
+    n_slices: desired number of Y slices with equal total entries (over X)
+
+    Returns:
+        A list of (ybin_lo, ybin_hi) tuples (1-based, inclusive),
+        not using underflow/overflow bins.
+    """
+    nbins_x = h2.GetNbinsX()
+    nbins_y = h2.GetNbinsY()
+
+    # 1) Sum over X for each Y bin (start_bin..nbins_y)
+    per_y = []
+    total = 0.0
+    for j in range(start_bin, nbins_y + 1):
+        s = 0.0
+        for i in range(1, nbins_x + 1):
+            s += h2.GetBinContent(i, j)
+        per_y.append(s)
+        total += s
+
+    if total <= 0:
+        raise RuntimeError("Histogram is empty (no entries in in-range Y bins).")
+
+    # 2) Cumulative along Y
+    cumulative = []
+    run = 0.0
+    for s in per_y:
+        run += s
+        cumulative.append(run)
+
+    target_per_slice = total / float(n_slices)
+
+    # 3) Find upper-bin edge for each slice (except the last)
+    upper_edges = []  # list of Y-bin indices (start_bin..nbins_y) as upper edges
+    k = 1  # we’re looking for k * target_per_slice
+    for idx in range(len(per_y)):
+        j = start_bin + idx
+        if k >= n_slices:
+            break
+        if cumulative[idx] >= k * target_per_slice:
+            upper_edges.append(j)
+            k += 1
+
+    # Make sure we have n_slices-1 boundaries, then add last at nbins_y
+    # If some were missed (e.g. lots of empty bins), just don’t add extras;
+    # last slice will absorb remaining bins.
+    upper_edges = upper_edges[:n_slices-1]
+    upper_edges.append(nbins_y)
+
+    # 4) Convert upper edges into (lo, hi) bin ranges
+    slices = []
+    prev_hi = start_bin - 1
+    for hi in upper_edges:
+        lo = prev_hi + 1
+        slices.append((lo, hi))
+        prev_hi = hi
+
+    return slices

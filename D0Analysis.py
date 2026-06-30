@@ -9,6 +9,7 @@ from deprecated import deprecated
 import pandas as pd
 from . import fit_functions
 from . import utils
+from . import fit
 
 # Global list to keep callables alive
 _tf1_callables = []
@@ -30,6 +31,215 @@ class FileStructures(Enum):
     RUNDIRS = auto()
     FLAT = auto()
 
+def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, norm_by='lumi', min_ir=0):
+    """
+    Obtain D0 yield per ZNC luminosity or number of selected events as a function of ZNC hadronic interaction rate
+    IR bins are chosen by equally distributing the D0 candidates among n_ir_bins bins along the IR axis
+    Yield is extracted using iminuit 
+    """
+    if hist_dict is None:
+        hist_names = ['analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto']
+        if norm_by == 'selected_events':
+            hist_names.append('analysis-event-selection/output;1/Event_AfterCuts/MyInteractionRateHisto') 
+        hist_dict = get_histograms(data_dir, runlist, hist_names, histogramNamesfileStructure=file_structure)
+    hist_m_ir = hist_dict['analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto']
+    # Get IR bin edges
+    if bin_edges_ir is None:
+        min_bin = hist_m_ir.GetYaxis().FindBin(min_ir)
+        print(f"Finding IR bin edges based on equal division of D0 candidates, starting at bin {min_bin}")
+        bin_edges_ir = utils.equal_stat_y_slices(hist_m_ir, n_ir_bins, min_bin)
+    for i, (low, high) in enumerate(bin_edges_ir):
+        print(f"Range {i+1}: bin {low} -> {high}; IR={hist_m_ir.GetYaxis().GetBinLowEdge(low):.2f} kHz -> {hist_m_ir.GetYaxis().GetBinLowEdge(high):.2f} kHz")
+        integral = hist_m_ir.Integral(binx1=1, binx2=hist_m_ir.GetXaxis().GetNbins(), biny1=low, biny2=high)
+        print(f"  Integral={integral:.2f}")
+    # Get slices of invariant mass
+    m_projs = []
+    for i, (ybin_lo, ybin_hi) in enumerate(bin_edges_ir):
+        proj_name = f"mproj_slice{i}"
+        proj = hist_m_ir.ProjectionX(proj_name, ybin_lo, ybin_hi)  # inclusive
+        m_projs.append(proj)
+        m_projs[-1].SetTitle(f"{hist_m_ir.GetYaxis().GetBinLowEdge(ybin_lo):.1f} #leq IR #leq {hist_m_ir.GetYaxis().GetBinUpEdge(ybin_hi):.1f} kHz")
+    # Convert pyroot histograms to hist histograms
+    m_projs_h = [utils.root_to_hist(h) for h in m_projs]
+    for h in m_projs_h:
+        h.axes[0].label = h.axes[0].label.replace("#leq", "$\\leq$")
+
+    # Extract the yield and plot
+    fit_results = []
+
+    nrows = int(np.ceil(len(m_projs_h)/ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(23, 4*nrows))
+    for i, h in enumerate(m_projs_h):
+        row = int(np.floor(i/ncols))
+        col = i%ncols
+        ax=axes[row,col]
+        
+        axis = h.axes[0]
+        bin_edges = axis.edges
+        bin_centers = axis.centers
+        counts = h.values()
+        bin_widths = np.diff(bin_edges)
+
+        fit_result = fit.fit_mass_peak(h, axis_name=axis.name, x_range=None, sigma_limits=(0.005, 0.05), amp_frac_init=0.007)
+        fit_results.append(fit_result)
+        
+        # Plot data + fit
+        x_plot = np.linspace(bin_edges[0], bin_edges[-1], 1000)
+        
+        # density (events / GeV)
+        y_density_total = fit.model_density(x_plot, *fit_result["params"].values())
+        y_density_sig   = fit.gaussian(x_plot, fit_result["params"]["mu"], fit_result["params"]["sigma"], fit_result["params"]["amp"])
+        y_density_bkg   = fit.background(x_plot, fit_result["params"]["c0"], fit_result["params"]["c1"], fit_result["params"]["c2"])
+        
+        # convert to "events per bin" for plotting on histogram scale
+        bin_width_plot = bin_widths[0]  # regular binning; for irregular, scale differently
+        y_plot_total = y_density_total * bin_width_plot
+        y_plot_sig   = y_density_sig * bin_width_plot
+        y_plot_bkg   = y_density_bkg * bin_width_plot
+        
+        ax.errorbar(
+            bin_centers,
+            counts,
+            yerr=np.sqrt(counts),
+            fmt=".",
+            color="black",
+            label="Data",
+        )
+        
+        ax.plot(x_plot, y_plot_total, color="red",  label="Signal + background")
+        #ax.plot(x_plot, y_plot_sig,   color="blue", linestyle="--", label="Signal")
+        ax.plot(x_plot, y_plot_bkg,   color="green", linestyle=":", label="Background")
+            
+        text = f"Yield={fit_result['signal_yield']:.0f} $\\pm$ {fit_result['signal_yield_err']:.0f}"
+        text += f"\n $\\sigma$={fit_result['params']['sigma']:.4f}"
+        text += f"\n $\\chi^{2}$/ndof = {fit_result['chi2_ndof']:.3f}"
+        text += f"\n amp frac = {fit_result['amp_frac']:.4f}"
+        text += f"\n valid = {fit_result['minuit'].valid}"
+        any_at_limits = False
+        for par, info in fit_result["at_limits"].items():
+            if info["at_lower"] or info["at_upper"]:
+                any_at_limits = True
+                text += f"\n{par} is at a limit: \n   lower={info['at_lower']}\n   upper={info['at_upper']}"
+        ax.text(0.7, 0.99, text, ha='left', va='top', transform=ax.transAxes)
+        
+        ax.set_xlabel("m [GeV]")
+        ax.set_ylabel("Events / bin")
+        ax.legend()
+        ax.set_title(f"{h.axes[0].label}")
+
+    plt.tight_layout()
+    plt.show()
+
+    # Get the IR values at the bin edges
+    low_edges_ir = [hist_m_ir.GetYaxis().GetBinLowEdge(p[0]) for p in bin_edges_ir]
+    low_edges_ir.append(hist_m_ir.GetYaxis().GetBinUpEdge(bin_edges_ir[-1][1]))
+    
+    if norm_by == 'selected_events':
+        result_name = 'hist_yield_per_selected_event'
+        result_title = "D0 yield / Selected events"
+        denominator_name = 'hist_events_ir'
+        hist_events_ir_fine = hist_dict['analysis-event-selection/output;1/Event_AfterCuts/MyInteractionRateHisto']
+        hist_denominator = hist_events_ir_fine.Rebin(len(low_edges_ir) - 1, denominator_name, np.asarray(low_edges_ir, 'd'))
+    elif norm_by == 'lumi':
+        result_name = 'hist_yield_per_lumi'
+        result_title = "D0 yield / ZNC lumi (µb)"
+        denominator_name = 'hist_lumi_ir'
+        # Integrate lumi inside the IR bins, using the instantaneous IR as a function of time
+        hist_denominator = utils.get_lumi_vs_ir(runlist, np.array(low_edges_ir), do_print=False)
+        for i in range(hist_denominator.GetNbinsX()):
+            hist_denominator.SetBinError(i+1, hist_denominator.GetBinContent(i+1) * (5/219.1)) # Relative uncertainty of ZNC cross section, from https://alice-notes.web.cern.ch/system/files/notes/analysis/1515/2024-10-23-lumi_2024_v5_0.pdf 
+
+    # Constuct raw yield vs IR histogram
+    hist_yield = hist_denominator.Clone()
+    hist_yield.Reset()
+    hist_yield.SetTitle("")
+    hist_yield.GetYaxis().SetTitle("Raw D0 yield")
+    for i in range(hist_yield.GetNbinsX()):
+        hist_yield.SetBinContent(i+1, fit_results[i]["signal_yield"])
+        hist_yield.SetBinError(i+1, fit_results[i]["signal_yield_err"])
+
+    # Constuct yield per lumi histogram
+    hist_yield_normalized = hist_yield.Clone()
+    hist_yield_normalized.SetName(result_name)
+    hist_yield_normalized.GetYaxis().SetTitle(result_title)
+    hist_yield_normalized.Divide(hist_denominator)
+
+    # Draw the final result
+    c = r.TCanvas()
+    c.cd()
+    hist_yield_normalized.Draw()
+    hist_yield_normalized.GetXaxis().SetRangeUser(0, hist_yield_normalized.GetXaxis().GetBinUpEdge(hist_yield_normalized.GetNbinsX()))
+    c.Draw()
+
+    result = {
+        'bin_edges_ir': bin_edges_ir,
+        'low_edges_ir': low_edges_ir,
+        result_name: hist_yield_normalized,
+        'hist_yield': hist_yield,
+        denominator_name: hist_denominator
+    }
+
+    return result
+
+def selected_events_per_lumi_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, min_ir=0):
+    """
+    Obtain D0 yield per ZNC luminosity or number of selected events as a function of ZNC hadronic interaction rate
+    IR bins are chosen by equally distributing the D0 candidates among n_ir_bins bins along the IR axis
+    Yield is extracted using iminuit 
+    """
+    if hist_dict is None:
+        hist_names = ['analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto',
+                      'analysis-event-selection/output;1/Event_AfterCuts/MyInteractionRateHisto']
+        hist_dict = get_histograms(data_dir, runlist, hist_names, histogramNamesfileStructure=file_structure)
+    hist_m_ir = hist_dict['analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto']
+    # Even if we don't use the D0 yield, base the IR bins on the D0 candidate statistics
+    if bin_edges_ir is None:
+        min_bin = hist_m_ir.GetYaxis().FindBin(min_ir)
+        print(f"Finding IR bin edges based on equal division of D0 candidates, starting at bin {min_bin}")
+        bin_edges_ir = utils.equal_stat_y_slices(hist_m_ir, n_ir_bins, min_bin)
+    for i, (low, high) in enumerate(bin_edges_ir):
+        print(f"Range {i+1}: bin {low} -> {high}; IR={hist_m_ir.GetYaxis().GetBinLowEdge(low):.2f} kHz -> {hist_m_ir.GetYaxis().GetBinLowEdge(high):.2f} kHz")
+        integral = hist_m_ir.Integral(binx1=1, binx2=hist_m_ir.GetXaxis().GetNbins(), biny1=low, biny2=high)
+        print(f"  Integral={integral:.2f}")
+
+    # Get the IR values at the bin edges
+    low_edges_ir = [hist_m_ir.GetYaxis().GetBinLowEdge(p[0]) for p in bin_edges_ir]
+    low_edges_ir.append(hist_m_ir.GetYaxis().GetBinUpEdge(bin_edges_ir[-1][1]))
+    
+    hist_events_ir_fine = hist_dict['analysis-event-selection/output;1/Event_AfterCuts/MyInteractionRateHisto']
+    hist_events_ir = hist_events_ir_fine.Rebin(len(low_edges_ir) - 1, 'hist_events_ir', np.asarray(low_edges_ir, 'd'))
+
+    # Integrate lumi inside the IR bins, using the instantaneous IR as a function of time
+    hist_lumi_ir = utils.get_lumi_vs_ir(runlist, np.array(low_edges_ir), do_print=False)
+    for i in range(hist_lumi_ir.GetNbinsX()):
+        hist_lumi_ir.SetBinError(i+1, hist_lumi_ir.GetBinContent(i+1) * (5/219.1)) # Relative uncertainty of ZNC cross section, from https://alice-notes.web.cern.ch/system/files/notes/analysis/1515/2024-10-23-lumi_2024_v5_0.pdf 
+
+    # Constuct events per lumi histogram
+    hist_events_per_lumi = hist_events_ir.Clone()
+    hist_events_per_lumi.SetName('hist_events_per_lumi')
+    hist_events_per_lumi.SetTitle('Number of selected events per ZNC lumi')
+    hist_events_per_lumi.GetYaxis().SetTitle("Selected events / ZNC lumi (µb)")
+    hist_events_per_lumi.Divide(hist_lumi_ir)
+
+    # Draw the final result
+    print("Drawing...")
+    c = r.TCanvas()
+    c.cd()
+    hist_events_per_lumi.Draw()
+    hist_events_per_lumi.GetXaxis().SetRangeUser(0, hist_events_per_lumi.GetXaxis().GetBinUpEdge(hist_events_per_lumi.GetNbinsX()))
+    c.Draw()
+
+    result = {
+        'bin_edges_ir': bin_edges_ir,
+        'low_edges_ir': low_edges_ir,
+        'hist_events_ir': hist_events_ir,
+        'hist_lumi_ir': hist_lumi_ir,
+        'hist_events_per_lumi': hist_events_per_lumi,
+        'canvas': c
+    }
+
+    return result
+
 def project_fiducial_acceptance(hist, minY, maxY):
     # Project a pT histogram from a y vs pT histogram
     lowerYBin = hist.GetXaxis().FindBin(minY)
@@ -37,9 +247,7 @@ def project_fiducial_acceptance(hist, minY, maxY):
     resultHist = hist.ProjectionY(f"{hist.GetName()}_y_{minY}_{maxY}", lowerYBin, upperYBin)
     return resultHist
 
-def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStructure = None, fileName = 'AnalysisResults.root'):
-    if histogramNamesfileStructure is None:
-        histogramNamesfileStructure = FileStructures.FLAT
+def get_histograms(directory, runList, fullHistogramNames, histogramNamesfileStructure = FileStructures.FLAT, fileName = 'AnalysisResults.root'):
     splitHistNames = [s.split("/") for s in fullHistogramNames] 
     namesDict = {}
     for irow, (row, fullName) in enumerate(zip(splitHistNames, fullHistogramNames)):
