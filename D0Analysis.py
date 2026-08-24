@@ -4,15 +4,20 @@ import hist
 import uproot
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors
 import matplotlib.patches as mpatches
 from deprecated import deprecated
 import pandas as pd
+from jacobi import propagate
+import ctypes
 from . import fit_functions
 from . import utils
 from . import fit
 
 # Global list to keep callables alive
 _tf1_callables = []
+marker_styles = [20, 21, 22, 23, 33, 34, 47, 41]
+default_palette = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:brown", "tab:olive", "tab:cyan", "tab:pink"]
 
 # Direct all prints in ROOT through its internal error handler (fix 'Q' option in TH1.Fit)
 r.gPrintViaErrorHandler = True
@@ -30,6 +35,295 @@ RUNLIST_PASS5_CBT_HADRONPID = ['544614', '544640', '544674', '544754', '544767',
 class FileStructures(Enum):
     RUNDIRS = auto()
     FLAT = auto()
+
+def correct_efficiency_ir_dependence(hist_yield_per_lumi, hist_mc_rec_ir, hist_mc_gen_ir, savefig=None):
+    """
+    Correct the MC efficiency as a function of IR, using the data yield per lumi IR dependence.
+    Exponential curves are fitted to the data yield per lumi and the MC efficiency.
+    The data yield per lumi is normalized such that the fitted curves' values at IR=0 are equal.
+    The curve R(IR) is constructed as the ratio between the MC fitted curve and the normalized data fitted curve.
+    Then, the MC reconstructed counts histogram is rescaled by R(IR), obtaining a corrected MC efficiency in bins of IR.
+    The corrected MC efficiency is then integrated over IR, using the MC generated counts as weights.
+    The input histograms are integrated over y and pT, and the user must take care that the integration ranges correspond!
+    """
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.size": 14
+    })
+
+    hist_mc_eff_ir = hist_mc_rec_ir.Clone()
+    hist_mc_eff_ir.Divide(hist_mc_eff_ir, hist_mc_gen_ir, 1, 1, 'B')
+
+    # Plot the MC efficiency and the yield per lumi
+    fig1, ax1 = plt.subplots(1, 2, figsize=(20, 6))
+    num_bins_mc = hist_mc_eff_ir.GetNbinsX()
+    centers_mc = np.array([hist_mc_eff_ir.GetBinCenter(i) for i in range(1, num_bins_mc + 1)])
+    counts_mc = np.array([hist_mc_eff_ir.GetBinContent(i) for i in range(1, num_bins_mc + 1)])
+    widths_mc = np.array([hist_mc_eff_ir.GetBinWidth(i) for i in range(1, num_bins_mc + 1)])
+    errors_mc = np.array([hist_mc_eff_ir.GetBinError(i) for i in range(1, num_bins_mc + 1)])
+    ax1[0].errorbar(centers_mc, counts_mc, xerr=widths_mc/2, yerr=errors_mc, fmt='.', color='green', lw=1, label='MC efficiency', zorder=99)
+    ax1[0].set_xlabel("Interaction rate (kHz)")
+    ax1[0].legend(frameon=False)
+    num_bins_data = hist_yield_per_lumi.GetNbinsX()
+    centers_data = np.array([hist_yield_per_lumi.GetBinCenter(i) for i in range(1, num_bins_data + 1)])
+    counts_data = np.array([hist_yield_per_lumi.GetBinContent(i) for i in range(1, num_bins_data + 1)])
+    widths_data = np.array([hist_yield_per_lumi.GetBinWidth(i) for i in range(1, num_bins_data + 1)])
+    errors_data = np.array([hist_yield_per_lumi.GetBinError(i) for i in range(1, num_bins_data + 1)])
+    ax1[1].errorbar(centers_data, counts_data, xerr=widths_data/2, yerr=errors_data, fmt='.', color='blue', lw=1, label=f'Data yield per lumi', zorder=99)
+    ax1[1].set_xlabel("Interaction rate (kHz)")
+
+    # Convert histograms to scikit-hep/hist and fit them using iminuit
+    h_yield_per_lumi = utils.root_to_hist(hist_yield_per_lumi)
+    print("----- Fitting the data yield per lumi -----")
+    fit_data = fit.fit_ir_trend(h_yield_per_lumi, [0, 0], axis_name=h_yield_per_lumi.axes[0].name, model=fit.model_exp)
+    display(fit_data['minuit'])
+    print("")
+
+    h_eff_ir = utils.root_to_hist(hist_mc_eff_ir)
+    h_mc_rec_ir = utils.root_to_hist(hist_mc_rec_ir)
+    h_mc_gen_ir = utils.root_to_hist(hist_mc_gen_ir)
+    # Remove trailing zeros from the MC histograms
+    (h_mc_gen_ir, h_eff_ir, h_mc_rec_ir), trim = utils.trim_trailing_zeros(h_mc_gen_ir, h_eff_ir, h_mc_rec_ir)
+    # Fit the MC efficiency, supplying the rec and gen histograms so that the binomial NLL can be used
+    print("----- Fitting the MC efficiency -----")
+    fit_mc = fit.fit_ir_trend(h_eff_ir, [0, 0], axis_name=h_eff_ir.axes[0].name, model=fit.model_exp, h_successes=h_mc_rec_ir, h_trials=h_mc_gen_ir)
+    display(fit_mc['minuit'])
+    print("")
+
+    # Get the error bands for the fits
+    params_data = fit_data['minuit'].values
+    params_mc = fit_mc['minuit'].values
+    cov_data = fit_data['minuit'].covariance
+    cov_mc = fit_mc['minuit'].covariance
+    ir_axis = np.linspace(0, 50, 500)
+    y_mc_fit, ycov_mc_fit = propagate(lambda p: fit.model_exp(ir_axis, p), params_mc, cov_mc)
+    y_mc_fit_errprop = np.diag(ycov_mc_fit) ** 0.5
+    ax1[0].plot(ir_axis, y_mc_fit, color='C3', label=f"Fit: {params_mc[0]:.5g}*exp(-{params_mc[1]:.5g}*IR)")
+    ax1[0].fill_between(ir_axis, y_mc_fit-y_mc_fit_errprop, y_mc_fit+y_mc_fit_errprop, facecolor='C3', alpha=0.5)
+    y_data_fit, ycov_data_fit = propagate(lambda p: fit.model_exp(ir_axis, p), params_data, cov_data)
+    y_data_fit_errprop = np.diag(ycov_data_fit) ** 0.5
+    ax1[1].plot(ir_axis, y_data_fit, color='C1', label=f"Fit: {params_data[0]:.5g}*exp(-{params_data[1]:.5g}*IR)")
+    ax1[1].fill_between(ir_axis, y_data_fit-y_data_fit_errprop, y_data_fit+y_data_fit_errprop, facecolor='C1', alpha=0.5)
+
+    # Show the data points and fitted curves with error bands
+    ax1[0].legend(frameon=False)
+    ax1[1].legend(frameon=False)
+    plt.show()
+
+    # Combined parameter vector and covariance
+    n_data = len(params_data)
+    n_mc = len(params_mc)
+    theta = np.concatenate([params_data, params_mc])
+    # Assume no cross-covariance
+    cov_theta = np.block([
+        [cov_data,            np.zeros((n_data, n_mc))],
+        [np.zeros((n_mc, n_data)), cov_mc             ]
+    ])
+
+    ir0 = 0.0
+    # Extrapolated values at ir0
+    f_data_ir0 = fit.model_exp(ir0, params_data)
+    f_mc_ir0 = fit.model_exp(ir0, params_mc)
+    # Normalization factor
+    s = f_mc_ir0 / f_data_ir0
+    # Define the function which normalizes the data, so that we can propagate the error for the normalized curve
+    def model_exp_norm(ir, theta):
+        params_data_curr = theta[:n_data]
+        params_mc_curr = theta[n_data:]
+        # Extrapolated values at ir0
+        f_data_ir0_curr = fit.model_exp(ir0, params_data_curr)
+        f_mc_ir0_curr = fit.model_exp(ir0, params_mc_curr)
+        # Normalization factor
+        s_curr = f_mc_ir0_curr / f_data_ir0_curr
+        return s_curr * fit.model_exp(ir, params_data_curr)
+    # Obtain the normalized data curve and its error band
+    y_data_norm, ycov_data_norm = propagate(lambda p: model_exp_norm(ir_axis, p), theta, cov_theta)
+    y_data_norm_errprop = np.diag(ycov_data_norm) ** 0.5
+
+    # Plot the MC points and its fit, and the normalized data points and the normalized fit in the same figure
+    fig2 = plt.figure(figsize=(8,8))
+    gs = fig2.add_gridspec(nrows=2, ncols=1, height_ratios=[2, 1], hspace=0.)
+    ax_top = fig2.add_subplot(gs[0, 0])
+    ax_bottom = fig2.add_subplot(gs[1, 0], sharex=ax_top)
+
+    widths_mc = h_eff_ir.axes[0].edges[1:] - h_eff_ir.axes[0].edges[:-1]
+    ax_top.errorbar(h_eff_ir.axes[0].centers, h_eff_ir.values(), xerr=widths_mc/2, yerr=h_eff_ir.variances()**0.5, fmt='.', color='green', lw=1, label=f'MC efficiency', zorder=0)
+    ax_top.errorbar(centers_data, counts_data * s, xerr=widths_data/2, yerr=errors_data * s, fmt='.', color='blue', lw=1, label=f'Data yield per lumi normalized to MC at IR=0', zorder=99)
+
+    ax_top.plot(ir_axis, y_mc_fit, color='C3')#, label=f'Fit to exponential function')
+    ax_top.fill_between(ir_axis, y_mc_fit-y_mc_fit_errprop, y_mc_fit+y_mc_fit_errprop, facecolor='C3', alpha=0.5)
+
+    ax_top.plot(ir_axis, y_data_norm, color='C1')#, label=f'Data curve normalized to MC at IR=0')
+    ax_top.fill_between(ir_axis, y_data_norm-y_data_norm_errprop, y_data_norm+y_data_norm_errprop, facecolor='C1', alpha=0.5)
+
+    ax_top.legend(frameon=False)
+
+    # Use the ratio between the data curve and the MC curve to rescale the reconstructed counts
+    # Define the ratio itself as a function, to make it available for error propagation
+    def ratio_data_norm_mc_fit(ir, theta):
+        params_data_curr = theta[:n_data]
+        params_mc_curr = theta[n_data:]
+        # Extrapolated values at ir0
+        f_data_ir0_curr = fit.model_exp(ir0, params_data_curr)
+        f_mc_ir0_curr = fit.model_exp(ir0, params_mc_curr)
+        # Normalization factor
+        s_curr = f_mc_ir0_curr / f_data_ir0_curr
+        return s_curr * fit.model_exp(ir, params_data_curr) / fit.model_exp(ir, params_mc_curr)
+
+    # Calculate the ratio and its error
+    R_ir, R_ir_cov = propagate(lambda p: ratio_data_norm_mc_fit(ir_axis, p), theta, cov_theta)
+    R_ir_errprop = np.diag(R_ir_cov) ** 0.5
+    ax_bottom.plot(ir_axis, R_ir, color='C4', label=f'Correction factor for MC efficiency')
+    ax_bottom.fill_between(ir_axis, R_ir-R_ir_errprop, R_ir+R_ir_errprop, facecolor='C4', alpha=0.5)
+    ax_bottom.set_xlabel("Interaction rate (kHz)")
+    ax_bottom.legend(frameon=False)
+    ax_bottom.set_xlabel("Interaction rate (kHz)")
+
+    if savefig is not None:
+        fig2.savefig(savefig)
+    plt.show()
+
+    # Perform the rescaling on the ROOT histograms
+    hist_mc_rec_ir_rescaled = hist_mc_rec_ir.Clone()
+    for i in range(hist_mc_rec_ir_rescaled.GetNbinsX()):
+        ir_i = hist_mc_rec_ir_rescaled.GetBinCenter(i+1)
+        N_rec_i = hist_mc_rec_ir.GetBinContent(i+1)
+        err_rec_i = hist_mc_rec_ir.GetBinError(i+1)
+        rescaling_factor_i, rescaling_factor_variance_i = propagate(lambda p: ratio_data_norm_mc_fit(ir_i, p), theta, cov_theta)
+        hist_mc_rec_ir_rescaled.SetBinContent(i+1, N_rec_i * rescaling_factor_i) 
+        hist_mc_rec_ir_rescaled.SetBinError(i+1, np.sqrt(N_rec_i**2 * rescaling_factor_variance_i + rescaling_factor_i**2 * err_rec_i**2))
+
+    # Draw the original and rescaled rec. MC histogram
+    c1 = r.TCanvas('c1', 'c1', 1200, 400)
+    c1.Divide(2,1)
+    c1.cd(1)
+    hist_mc_rec_ir.Draw()
+    hist_mc_rec_ir.SetTitle("Reconstructed D0 counts")
+    hist_mc_rec_ir.SetStats(0)
+    hist_mc_rec_ir_rescaled.Draw('same')
+    hist_mc_rec_ir_rescaled.SetLineColor(r.kRed)
+    l11 = r.TLegend(0.7, 0.75, 0.85, 0.85)
+    l11.SetBorderSize(0)
+    l11.AddEntry(hist_mc_rec_ir, "Original")
+    l11.AddEntry(hist_mc_rec_ir_rescaled, "Rescaled")
+    l11.Draw()
+    # Draw the original and rescaled efficiency histograms
+    c1.cd(2)
+    hist_mc_eff_ir_rescaled = hist_mc_rec_ir_rescaled.Clone()
+    hist_mc_eff_ir_rescaled.SetName('hist_mc_eff_ir_rescaled')
+    hist_mc_eff_ir_rescaled.Divide(hist_mc_rec_ir_rescaled, hist_mc_gen_ir, 1, 1, 'B')
+    hist_mc_eff_ir_rescaled.SetTitle("MC efficiency")
+    hist_mc_eff_ir_rescaled.Draw()
+    hist_mc_eff_ir_rescaled.SetLineColor(r.kRed)
+    hist_mc_eff_ir.Draw('same')
+    l12 = r.TLegend(0.7, 0.75, 0.85, 0.85)
+    l12.SetBorderSize(0)
+    l12.AddEntry(hist_mc_eff_ir, "Original")
+    l12.AddEntry(hist_mc_eff_ir_rescaled, "Rescaled")
+    l12.Draw()
+
+    _tf1_callables.append([c1, hist_mc_rec_ir, hist_mc_rec_ir_rescaled, l11,
+                           hist_mc_eff_ir, hist_mc_eff_ir_rescaled, l12])
+    c1.Draw()
+
+    # Now compute the efficiency integrated over IR in one go, to make error propagation simpler
+    eff_rescaled_integrated, eff_rescaled_integrated_err_total, eff_rescaled_integrated_err_stat, eff_rescaled_integrated_err_fit = apply_ir_rescaling(hist_mc_rec_ir, hist_mc_gen_ir, theta, cov_theta, ir0, trim, n_data)
+
+    # For comparison, calculate the original integrated efficiency and report the change in efficiency and cross section caused by the rescaling
+    gen_orig_integrated_err = ctypes.c_double(0.0)
+    rec_orig_integrated_err = ctypes.c_double(0.0)
+    gen_orig_integrated = hist_mc_gen_ir.IntegralAndError(0, -1, err=gen_orig_integrated_err)
+    rec_orig_integrated = hist_mc_rec_ir.IntegralAndError(0, -1, err=rec_orig_integrated_err)
+    eff_orig_integrated = rec_orig_integrated / gen_orig_integrated
+    eff_orig_integrated_error = np.sqrt((eff_orig_integrated * (1 - eff_orig_integrated)) / gen_orig_integrated)
+    relative_change_eff = (eff_rescaled_integrated - eff_orig_integrated) / (eff_orig_integrated)
+    relative_change_cs = (1/eff_rescaled_integrated - 1/eff_orig_integrated) / (1/eff_orig_integrated)
+
+    print("----- Results for the rescaled efficiency integrated over IR -----")
+    print(f"Error on integrated efficiency from rescaling procedure: {eff_rescaled_integrated_err_fit*100:.5f}")
+    print(f"Error on integrated efficiency from statistical errors on MC counts: {eff_rescaled_integrated_err_stat*100:.5f}")
+    print(f"Result for rescaled, IR integrated efficiency, with total error:") 
+    print(f"    {eff_rescaled_integrated*100:.3f}% +- {eff_rescaled_integrated_err_total*100:.3f}%")
+    print(f"Original integrated efficiency: {eff_orig_integrated*100:.3f} +- {eff_orig_integrated_error*100:.5f}%")
+    print(f"Rescaling caused {relative_change_eff*100:.1f}% change in efficiency -> {relative_change_cs*100:.1f}% change in cross section")
+    print("------------------------------------------------------------------")
+
+    # Return the results, and all that is needed to apply the rescaling to a given efficiency, with error propagation
+    result = {
+        "ir_axis": ir_axis,
+        "R_ir": R_ir,
+        "theta": theta,
+        "cov_theta": cov_theta,
+        "eff_rescaled": eff_rescaled_integrated,
+        "eff_rescaled_err": eff_rescaled_integrated_err_total
+    }
+    return result
+
+def apply_ir_rescaling(hist_mc_rec_ir, hist_mc_gen_ir, theta, cov_theta, ir0, trim, n_data):
+    # Obtain ir bins, MC rec and gen counts as arrays
+    n_bins = hist_mc_rec_ir.GetNbinsX()
+    ir_bin_centers_arr = np.array([hist_mc_rec_ir.GetBinCenter(i) for i in range(1, n_bins+1-trim)], dtype=float)
+    N_gen_mc_arr = np.array([hist_mc_gen_ir.GetBinContent(i) for i in range(1, n_bins+1-trim)], dtype=float)
+    N_rec_mc_arr = np.array([hist_mc_rec_ir.GetBinContent(i) for i in range(1, n_bins+1-trim)], dtype=float)
+    # Raw MC efficiencies, bin by bin. Treated as deterministic wrt the fit parameter error propagation
+    eff_mc_arr = N_rec_mc_arr / N_gen_mc_arr
+    # Define the function which computes the rescaled efficiency
+    def eff_rescaled(theta):
+        params_data_curr = theta[:n_data]
+        params_mc_curr = theta[n_data:]
+        
+        # Compute the normalization factor for the data curve
+        eff_data_0 = fit.model_exp(ir0, params_data_curr)
+        eff_mc_0 = fit.model_exp(ir0, params_mc_curr)
+        s_curr = eff_mc_0 / eff_data_0
+        
+        num = 0.0
+        den = 0.0
+        for ir_i, Ngen_i, eff_mc_bin_i in zip(ir_bin_centers_arr, N_gen_mc_arr, eff_mc_arr):
+            # Curve values at IR_i
+            eff_data_fit_i = fit.model_exp(ir_i, params_data_curr)
+            eff_mc_fit_i = fit.model_exp(ir_i, params_mc_curr)
+            
+            # Normalized data efficiency at IR_i
+            eff_data_fit_norm_i = s_curr * eff_data_fit_i
+            
+            # Correction factor R(IR_i)
+            R_i = eff_data_fit_norm_i / eff_mc_fit_i
+
+            # Corrected efficiency in bin i
+            eff_corrected_i = R_i * eff_mc_bin_i
+
+            num += Ngen_i * eff_corrected_i
+            den += Ngen_i
+
+        return num / den
+
+    eff_rescaled_integrated, eff_rescaled_integrated_var_fit = propagate(eff_rescaled, theta, cov_theta)
+    eff_rescaled_integrated_err_fit = np.sqrt(eff_rescaled_integrated_var_fit)
+
+    # Compute the binomial error due to the original statistical error bars on the MC histograms
+    N_gen_mc_arr = np.array([hist_mc_gen_ir.GetBinContent(i) for i in range(1, n_bins+1-trim)], dtype=float)
+    N_rec_mc_arr = np.array([hist_mc_rec_ir.GetBinContent(i) for i in range(1, n_bins+1-trim)], dtype=float)
+    # Raw MC efficiencies, bin by bin. Treated as deterministic wrt the fit parameter error propagation
+    eff_mc_arr = N_rec_mc_arr / N_gen_mc_arr
+    eff_var_stat_arr = eff_mc_arr * (1.0 - eff_mc_arr) / N_gen_mc_arr
+    # Propagate the statistical errors through the rescaling using the central parameters
+    f_data_ir0 = fit.model_exp(ir0, theta[:n_data])
+    f_mc_ir0 = fit.model_exp(ir0, theta[n_data:])
+    s = f_mc_ir0 / f_data_ir0
+    R_arr = np.array([
+        (s * fit.model_exp(ir_i, theta[:n_data])) / fit.model_exp(ir_i, theta[n_data:])
+        for ir_i in ir_bin_centers_arr
+    ])
+    eff_rescaled_var_stat_arr = (R_arr**2) * eff_var_stat_arr
+    # Propagate the statistical errors through the integration over IR
+    eff_rescaled_integrated_var_stat = np.sum((N_gen_mc_arr**2) * eff_rescaled_var_stat_arr) / (np.sum(N_gen_mc_arr)**2)
+    eff_rescaled_integrated_err_stat = np.sqrt(eff_rescaled_integrated_var_stat)
+    # Combine the stat error and the error from the rescaling procedure in quadrature
+    eff_rescaled_integrated_err_total = np.sqrt(eff_rescaled_integrated_var_stat + eff_rescaled_integrated_var_fit)
+
+    # Return the rescaled, integrated efficiency and the errors
+    return eff_rescaled_integrated, eff_rescaled_integrated_err_total, eff_rescaled_integrated_err_stat, eff_rescaled_integrated_err_fit
 
 def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, norm_by='lumi', min_ir=0, max_ir=None):
     """
@@ -2052,6 +2346,74 @@ class FactorizedEfficiency():
         for factor in self.factors:
             factor.histogram.SetStats(0)
 
+    def draw(self, title="", labels=None, palette=default_palette, width=1400, height=800):
+        r.gStyle.SetTitleFont(132, "")
+        r.gStyle.SetLegendFont(132)
+        colors = utils.create_seaborn_palette(palette)
+        if labels is None:
+            labels = [f.shortTitle for f in self.factors]
+        
+        if hasattr(self, 'canvas'):
+            del self.canvas
+        self.canvas = r.TCanvas('cFactorizedEff', 'cFactorizedEff', width, height)
+        self.canvas.Divide(2,1,1e-12,0.01)
+
+        self.canvas.cd(1)
+        r.gPad.SetLeftMargin(0.1)
+        r.gPad.SetRightMargin(0.05)
+        self.legend = r.TLegend(0.5, 0.15, 0.89, 0.325)
+        self.legend.SetBorderSize(0)
+        self.legend.SetNColumns(2)
+        for i, factor in enumerate(self.factors):
+            factor.histogram.SetTitle(title)
+            factor.histogram.GetYaxis().SetTitle("#varepsilon")
+            factor.histogram.GetYaxis().SetRangeUser(0, 1)
+            factor.histogram.Draw('SAME EP')
+            factor.histogram.SetLineColor(colors[i].GetNumber())
+            factor.histogram.SetMarkerStyle(marker_styles[i])
+            factor.histogram.SetMarkerColor(colors[i].GetNumber())
+            factor.histogram.SetStats(0)
+            self.legend.AddEntry(factor.histogram, labels[i], 'p')
+        self.legend.Draw()
+
+        self.canvas.cd(2)
+        self.legendCumulative = r.TLegend(0.12, 0.12, 0.899, 0.393)
+        self.legendCumulative.SetBorderSize(0)
+        self.legendCumulative.SetMargin(0.02)
+        r.gPad.SetLeftMargin(0.10)
+        r.gPad.SetRightMargin(0.05)
+        name_string = "1"
+        label = labels[0]
+        self.cumulativeEfficiencies = [self.factors[0].histogram.Clone()]
+        self.cumulativeEfficiencies[0].SetName(name_string)
+        self.cumulativeEfficiencies[0].Draw('EP')
+        self.cumulativeEfficiencies[0].SetLineColor(colors[0].GetNumber())
+        self.cumulativeEfficiencies[0].SetMarkerStyle(marker_styles[0])
+        self.cumulativeEfficiencies[0].SetMarkerColor(colors[0].GetNumber())
+        self.cumulativeEfficiencies[0].SetStats(0)
+        self.cumulativeEfficiencies[0].GetYaxis().SetRangeUser(0.004, 1)
+        self.cumulativeEfficiencies[0].SetTitle(title)
+        self.cumulativeEfficiencies[0].GetYaxis().SetTitle("#varepsilon")
+        self.legendCumulative.AddEntry(self.cumulativeEfficiencies[0], labels[0], 'p')
+        for i, factor in enumerate(self.factors[1:]):
+            ce = self.cumulativeEfficiencies[i].Clone()
+            ce.Multiply(factor.histogram)
+            name_string += f"_{i+2}"
+            self.cumulativeEfficiencies.append(ce)
+            self.cumulativeEfficiencies[i+1].SetName(name_string)
+            self.cumulativeEfficiencies[i+1].Draw('SAME EP')
+            self.cumulativeEfficiencies[i+1].SetLineColor(colors[i+1].GetNumber())
+            self.cumulativeEfficiencies[i+1].SetMarkerStyle(marker_styles[i+1])
+            self.cumulativeEfficiencies[i+1].SetMarkerColor(colors[i+1].GetNumber())
+            self.cumulativeEfficiencies[i+1].SetStats(0)
+            label += " #times " + labels[i+1]
+            self.legendCumulative.AddEntry(self.cumulativeEfficiencies[i+1], label, 'p')
+            del ce
+        self.legendCumulative.Draw()
+        r.gPad.SetLogy()
+
+        self.canvas.Draw()
+
 class FitResult():
     "All information about the invariant mass fit to a pT bin"
 
@@ -2077,7 +2439,11 @@ class FitResult():
         if doPrint:
             print(f"bin {bin.index} nCombBackground = {self.nCombBackground} was calculated by integration from {self.fitMu - 3*self.fitSigma} to {self.fitMu + 3*self.fitSigma}")
         self.nReflBackground = dataReflFunc.GetParameter(0) / bin.massPtSlice.GetBinWidth(1)
+        # Symmetric Hesse error
         self.relativeStatError = fitFunc.GetParError(0) / (bin.massPtSlice.GetBinWidth(1) * self.nSignal)
+        # Asymmetric MINOS errors
+        self.relativeStatErrorLower = np.abs(self.result.LowerError(0)) / (bin.massPtSlice.GetBinWidth(1) * self.nSignal)
+        self.relativeStatErrorUpper = np.abs(self.result.UpperError(0)) / (bin.massPtSlice.GetBinWidth(1) * self.nSignal)
         signalIntegral3Sigma = signalFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
         reflIntegral3Sigma = dataReflFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)
         corrIntegral3Sigma = (corrBkgFunc.Integral(self.fitMu - 3*self.fitSigma, self.fitMu + 3*self.fitSigma) / bin.massPtSlice.GetBinWidth(1)) if corrBkgFunc is not None else 0
@@ -2390,6 +2756,8 @@ class Analysis():
         self.kaonLegCutName = cutNames["kaonLegCutName"]
         self.pionLegCutName = cutNames["pionLegCutName"]
         self.pairCutName = cutNames["pairCutName"]
+        if self.pairCutName != "":
+            self.pairCutName = "_" + self.pairCutName
         # pT bins to be used in the differential cross section
         self.ptBinsArray = ptBins
         self.ptBins = []
@@ -2471,7 +2839,7 @@ class Analysis():
 
     def prepare_histograms(self):
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
-        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
+        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}_KPiFromD0FS"
 
         self.histLumi = self.fileTableMaker.Get(self.hLumiPath[0]).Get(self.hLumiPath[1])
         if len(self.hLumiPath) == 3:
@@ -2479,11 +2847,11 @@ class Analysis():
 
         # --- Define lists of histogram names ---
         # Data histograms
-        fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtHisto"
-        fullNameHistD0MassPtY = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtYHisto"
-        fullNameHistD0MassPtIsGap = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtIsGapHisto"
-        fullNameHistMultiDimA = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapAHisto"
-        fullNameHistMultiDimC = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.pairCutName}" + "/MyMassPtVtxNContribRealGapCHisto"
+        fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtHisto"
+        fullNameHistD0MassPtY = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtYHisto"
+        fullNameHistD0MassPtIsGap = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtIsGapHisto"
+        fullNameHistMultiDimA = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtVtxNContribRealGapAHisto"
+        fullNameHistMultiDimC = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtVtxNContribRealGapCHisto"
         fullNameHistVtxNContribAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxNContrib"
         fullNameHistVtxNContribRealAfterCuts = "analysis-event-selection/output;1/Event_AfterCuts/VtxNContribReal"
         # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
@@ -2492,13 +2860,24 @@ class Analysis():
         fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
         fullNamesGen.append(fullNameHistD0PtYGenerated)
         # Main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
-        fullNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
-        fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Y_PtFine" for fullNameRec in fullNamesMc]
+        baseNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}"]
+        fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + baseName + "_KPiFromD0FS/Y_PtFine" for baseName in baseNamesMc]
+        fullNamesMc += ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + baseName + "_KPiFromD0FS/Pt" for baseName in baseNamesMc]
         groupNameD0Matched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched
         fullNameHistD0YPtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Y_PtFine"
         fullNameHistD0PtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Pt"
         fullNamesMc.append(fullNameHistD0YPtMatched)
         fullNameHistD0MassPtReflected = "analysis-asymmetric-pairing/output;1/" + f"{self.groupNameD0PtMatched}Reflected" + "/MyMassPtHisto"
+        # Histograms needed for rescaling the IR dependence of the efficiency
+        fullNamesGen.append("analysis-asymmetric-pairing/output;1/MCTruthGenAfterBcCuts_D0FS/MyMcPtYInteractionRateHisto")
+        fullNamesMc.append(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto")
+        # Histogram used in factorized efficiency
+        fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_beforeEvtCuts_noTrackCut:noTrackCut_KPiFromD0FS/Pt")
+        fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_beforeEvtCuts_noTrackCut:noTrackCut_KPiFromD0FS/Y_PtFine")
+        fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_D0KaonTPC:noTrackCut_KPiFromD0FS/Pt")
+        fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_D0KaonTPC:noTrackCut_KPiFromD0FS/Y_PtFine")
+        fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_D0KaonTPCTOF:noTrackCut_KPiFromD0FS/Pt")
+        fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_D0KaonTPCTOF:noTrackCut_KPiFromD0FS/Y_PtFine")
 
         # Get the histograms from the AnalysisResults.root files
         self.dictMcHists = {}
@@ -2527,7 +2906,11 @@ class Analysis():
         self.histD0MassPtReflected = dictReflHist[fullNameHistD0MassPtReflected]
         self.histD0PtNotReflected = dictReflHist[fullNameHistD0PtMatched]
 
-        self.histD0YPtMatched = self.dictRecHists[fullNameHistD0YPtMatched]
+        try:
+            self.histD0YPtMatched = self.dictRecHists[fullNameHistD0YPtMatched]
+        except:
+            self.histD0YPtMatched = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto"]
+
         self.histD0PtMatched = project_fiducial_acceptance(self.histD0YPtMatched, self.minY, self.maxY)
         self.histD0PtMatched.SetName("histD0PtMatched")
         self.histD0PtMatched.SetTitle(f"Reconstructed, matched D0 in {self.minY:.1f} < y < {self.maxY:.1f}")
@@ -2557,7 +2940,6 @@ class Analysis():
             else:
                 raise Exception(f"Unable to find suitable histogram in data to make projection in rapidity!")
 
-
         self.histVtxNContribAfterCuts = tmpDict[fullNameHistVtxNContribAfterCuts]
         self.histVtxNContribRealAfterCuts = tmpDict[fullNameHistVtxNContribRealAfterCuts]
         self.nEvents = self.histVtxNContribAfterCuts.GetEntries()
@@ -2570,7 +2952,6 @@ class Analysis():
             upperBin = self.histD0MassPt.GetYaxis().FindBin(bin.upperPt) - 1
             hProjectionMass = self.histD0MassPt.ProjectionX(f"projMass_{bin.lowerPt}_{bin.upperPt}", firstybin=lowerBin, lastybin=upperBin)
             hProjectionMass.Rebin(bin.invMassRebin)
-            hProjectionMass.SetTitle(f"Kpi invariant mass, {bin.lowerPt} <= pT < {bin.upperPt} GeV/c")
             bin.massPtSlice = hProjectionMass
 
             hProjectionMassReflected = self.histD0MassPtReflected.ProjectionX(f"projMassMcReflected_{bin.lowerPt}_{bin.upperPt}", firstybin=lowerBin, lastybin=upperBin)
@@ -2753,7 +3134,9 @@ class Analysis():
             fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
         if signalSigma is not None:
             fitFunc.FixParameter(2, signalSigma)
-        fitResult.result = self.ptBins[bin].massPtSlice.Fit(fitFunc, "LMES0" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        ptr = self.ptBins[bin].massPtSlice.Fit(fitFunc, "LMES0" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
+        # Get TFitResult object whose lifetime is controlled by Python
+        fitResult.result = ptr.Clone()
         # Store the functions for plotting and calculations
         fitFuncParams = [fitFunc.GetParameters()[i] for i in range(fitFunc.GetNpar())]
         fitFuncParErrors = [fitFunc.GetParErrors()[i] for i in range(fitFunc.GetNpar())]
@@ -3245,10 +3628,12 @@ class Analysis():
         self.trackCutEfficiencies.append(eff)
         del eff
 
-    def calculate_factorized_efficiencies(self):
+    def calculate_factorized_efficiencies(self, allowOneDimHistograms=False):
         """
         Calculate factorized efficiencies for some predefined (hardcoded) factorizations
         Total efficiency = N(rec. matched D0 after all cuts) / N(gen. D0 after BC cuts)
+        If allowOneDimHistograms is True, it is assumed that the fiducial acceptance cut was applied inside table-reader,
+        so 1-dimensional pT histograms are safe for efficiency calculations.
         """
 
         # Prepare histograms
@@ -3290,21 +3675,28 @@ class Analysis():
         self.histD0PtGenAfterBcCutsDaughtersInAcc.SetTitle(f"Generated D0 in selected event with both daughters in acceptance, {self.minY} < y < {self.maxY}")
         self.histD0PtGenAfterBcCutsDaughtersInAcc = self.histD0PtGenAfterBcCutsDaughtersInAcc.Rebin(len(self.ptBinsArray) - 1, f"PtMcGenAfterBcCutsDaughtersInAccFinalBins", np.asarray(self.ptBinsArray, 'd'))
 
-        histD0YPtMatchedInSelEvent = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS/Y_PtFine"]
-        self.histD0PtMatchedInSelEvent = project_fiducial_acceptance(histD0YPtMatchedInSelEvent, self.minY, self.maxY)
-        self.histD0PtMatchedInSelEvent = self.histD0PtMatchedInSelEvent.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEvent", np.asarray(self.ptBinsArray, 'd'))
-        self.histD0PtMatchedInSelEvent.SetTitle("Reconstructed, matched D0->Kpi in selected event, no track or pair cuts")
+        self.histD0PtMatchedInRecEvent = self.get_reconstructed_mc_histogram("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_beforeEvtCuts_noTrackCut:noTrackCut_KPiFromD0FS",
+                                                                             "PtMcMatchedInRecEvent",
+                                                                             "Reconstructed, matched D0->Kpi in reconstructed event, no track or pair cuts")
 
-        histD0YPtMatchedInSelEventAfterTrackCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_KPiFromD0FS/Y_PtFine"]
-        self.histD0PtMatchedInSelEventAfterTrackCuts = project_fiducial_acceptance(histD0YPtMatchedInSelEventAfterTrackCuts, self.minY, self.maxY)
-        self.histD0PtMatchedInSelEventAfterTrackCuts = self.histD0PtMatchedInSelEventAfterTrackCuts.Rebin(len(self.ptBinsArray) - 1, f"PtMcMatchedInSelEventAfterTrackCuts", np.asarray(self.ptBinsArray, 'd'))
-        self.histD0PtMatchedInSelEventAfterTrackCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
+        self.histD0PtMatchedInSelEvent = self.get_reconstructed_mc_histogram("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_noTrackCut:noTrackCut_KPiFromD0FS",
+                                                                             "PtMcMatchedInSelEvent",
+                                                                             "Reconstructed, matched D0->Kpi in selected event, no track or pair cuts")
+
+        self.histD0PtMatchedInSelEventKaonTPCPID = self.get_reconstructed_mc_histogram("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_D0KaonTPC:noTrackCut_KPiFromD0FS",
+                                                                                       "PtMcMatchedInSelEventKaonTPCPID",
+                                                                                       "Reconstructed, matched D0->Kpi in selected event, kaon passed TPC PID")
+
+        self.histD0PtMatchedInSelEventKaonTPCTOFPID = self.get_reconstructed_mc_histogram("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_D0KaonTPCTOF:noTrackCut_KPiFromD0FS",
+                                                                                          "PtMcMatchedInSelEventKaonTPCTOFPID",
+                                                                                          "Reconstructed, matched D0->Kpi in selected event, kaon passed TPC+TOF PID")
+
+        self.histD0PtMatchedInSelEventAfterTrackCuts = self.get_reconstructed_mc_histogram(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_KPiFromD0FS",
+                                                                                           "PtMcMatchedInSelEventAfterTrackCuts",
+                                                                                           "Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
 
         if not hasattr(self, 'histD0PtMatchedFinalBins'):
-            histD0YPtMatchedInSelEventAfterTrackCutsAndPairCuts = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS/Y_PtFine"]
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = project_fiducial_acceptance(histD0YPtMatchedInSelEventAfterTrackCutsAndPairCuts, self.minY, self.maxY)
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.Rebin(len(self.ptBinsArray) - 1, "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", np.asarray(self.ptBinsArray, 'd'))
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetTitle("Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.get_reconstructed_mc_histogram(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}_KPiFromD0FS",  "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", "Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
         else:
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedFinalBins.Clone()
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetName("PtMcMatchedInSelEventAfterTrackCutsAndPairCuts")
@@ -3332,6 +3724,62 @@ class Analysis():
         self.factorizedEfficiencies.append(eff)
         del eff
 
+        # This factorization may not be possible with 'legacy' MC AnalysisResults
+        if self.histD0PtMatchedInRecEvent is not None and self.histD0PtMatchedInSelEventKaonTPCPID is not None and self.histD0PtMatchedInSelEventKaonTPCTOFPID is not None:
+            eff = FactorizedEfficiency(6)
+            eff.add_factor("Gen. D0 in lumi w/ accepted daughters", "Gen. D0 in lumi", self.histD0PtGenAfterBcCutsDaughtersInAcc, self.histD0PtGeneratedFinalBins)
+            eff.add_factor("Rec. matched D0 in rec. evt.", "Gen. D0 in lumi w/ accepted daughters", self.histD0PtMatchedInRecEvent, self.histD0PtGenAfterBcCutsDaughtersInAcc)
+            eff.add_factor("Rec. matched D0 in sel. evt.", "Rec. matched D0 in rec. evt.", self.histD0PtMatchedInSelEvent, self.histD0PtMatchedInRecEvent)
+            eff.add_factor("Rec. matched D0 in sel. evt., kaon passed TPC PID", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventKaonTPCPID, self.histD0PtMatchedInSelEvent)
+            eff.add_factor("Rec. matched D0 in sel. evt., kaon passed TPC+TOF PID", "Rec. matched D0 in sel. evt., kaon passed TPC PID", self.histD0PtMatchedInSelEventKaonTPCTOFPID, self.histD0PtMatchedInSelEventKaonTPCPID)
+            eff.add_factor("Rec. matched D0 in sel. evt., all cuts passed", "Rec. matched D0 in sel. evt., kaon passed TPC+TOF PID", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventKaonTPCTOFPID)
+            eff.calculate_total_efficiency()
+            self.factorizedEfficiencies.append(eff)
+            del eff
+
+        # This factorization may not be possible with 'legacy' MC AnalysisResults
+        if self.histD0PtMatchedInRecEvent is not None and self.histD0PtMatchedInSelEventKaonTPCPID is not None and self.histD0PtMatchedInSelEventKaonTPCTOFPID is not None:
+            eff = FactorizedEfficiency(7)
+            eff.add_factor("Gen. D0 in lumi w/ accepted daughters", "Gen. D0 in lumi", self.histD0PtGenAfterBcCutsDaughtersInAcc, self.histD0PtGeneratedFinalBins)
+            eff.add_factor("Gen. D0 in rec. evt. w/ accepted daughters", "Gen. D0 in lumi w/ accepted daughters", self.histD0PtGenInRecEventDaughtersInAcc, self.histD0PtGenAfterBcCutsDaughtersInAcc)
+            eff.add_factor("Rec. matched D0 in rec. evt.", "Gen. D0 in rec. evt. w/ accepted daughters", self.histD0PtMatchedInRecEvent, self.histD0PtGenInRecEventDaughtersInAcc)
+            eff.add_factor("Rec. matched D0 in sel. evt.", "Rec. matched D0 in rec. evt.", self.histD0PtMatchedInSelEvent, self.histD0PtMatchedInRecEvent)
+            eff.add_factor("Rec. matched D0 in sel. evt., kaon passed TPC PID", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventKaonTPCPID, self.histD0PtMatchedInSelEvent)
+            eff.add_factor("Rec. matched D0 in sel. evt., kaon passed TPC+TOF PID", "Rec. matched D0 in sel. evt., kaon passed TPC PID", self.histD0PtMatchedInSelEventKaonTPCTOFPID, self.histD0PtMatchedInSelEventKaonTPCPID)
+            eff.add_factor("Rec. matched D0 in sel. evt., all cuts passed", "Rec. matched D0 in sel. evt., kaon passed TPC+TOF PID", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventKaonTPCTOFPID)
+            eff.calculate_total_efficiency()
+            self.factorizedEfficiencies.append(eff)
+            del eff
+
+        # This factorization may not be possible with 'legacy' MC AnalysisResults
+        if self.histD0PtMatchedInRecEvent is not None and self.histD0PtMatchedInSelEventKaonTPCPID is not None and self.histD0PtMatchedInSelEventKaonTPCTOFPID is not None:
+            eff = FactorizedEfficiency(8)
+            eff.add_factor("Gen. D0 in lumi w/ accepted daughters", "Gen. D0 in lumi", self.histD0PtGenAfterBcCutsDaughtersInAcc, self.histD0PtGeneratedFinalBins)
+            eff.add_factor("Gen. D0 in rec. evt. w/ accepted daughters", "Gen. D0 in lumi w/ accepted daughters", self.histD0PtGenInRecEventDaughtersInAcc, self.histD0PtGenAfterBcCutsDaughtersInAcc)
+            eff.add_factor("Rec. matched D0 in rec. evt.", "Gen. D0 in rec. evt. w/ accepted daughters", self.histD0PtMatchedInRecEvent, self.histD0PtGenInRecEventDaughtersInAcc)
+            eff.add_factor("Rec. matched D0 in sel. evt.", "Rec. matched D0 in rec. evt.", self.histD0PtMatchedInSelEvent, self.histD0PtMatchedInRecEvent)
+            eff.add_factor("Rec. matched D0 in sel. evt., kaon passed TPC PID", "Rec. matched D0 in sel. evt.", self.histD0PtMatchedInSelEventKaonTPCPID, self.histD0PtMatchedInSelEvent)
+            eff.add_factor("Rec. matched D0 in sel. evt., kaon passed TPC+TOF PID", "Rec. matched D0 in sel. evt., kaon passed TPC PID", self.histD0PtMatchedInSelEventKaonTPCTOFPID, self.histD0PtMatchedInSelEventKaonTPCPID)
+            eff.add_factor("Rec. matched D0 in sel. evt., all track cuts passed", "Rec. matched D0 in sel. evt., kaon passed TPC+TOF PID", self.histD0PtMatchedInSelEventAfterTrackCuts, self.histD0PtMatchedInSelEventKaonTPCTOFPID)
+            eff.add_factor("Rec. matched D0 in sel. evt., track and pair cuts passed", "Rec. matched D0 in sel. evt., all track cuts passed", self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts, self.histD0PtMatchedInSelEventAfterTrackCuts)
+            eff.calculate_total_efficiency()
+            self.factorizedEfficiencies.append(eff)
+            del eff
+
+    def get_reconstructed_mc_histogram(self, groupName, name, title):
+        if f"{groupName}/Y_PtFine" in self.dictRecHists:
+            histD0YPt = self.dictRecHists[f"{groupName}/Y_PtFine"]
+            histD0Pt = project_fiducial_acceptance(histD0YPt, self.minY, self.maxY)
+        elif f"{groupName}/Pt" in self.dictRecHists:
+            print("Using 1-dimensional pT histogram for reconstructed count! For this to be correct, the fiducial rapidity cut should have been applied upstream!")
+            histD0Pt = self.dictRecHists[f"{groupName}/Pt"]
+        else:
+            print(f"Could not find histogram for '{title}' ({name})! Tried {groupName}/Pt and {groupName}/Y_PtFine")
+            return None
+        histD0Pt = histD0Pt.Rebin(len(self.ptBinsArray) - 1, name, np.asarray(self.ptBinsArray, 'd'))
+        histD0Pt.SetTitle(title)
+        return histD0Pt
+
     def create_raw_yield_histogram(self):
         self.histRawYield = r.TH1F("histRawYield", "Raw yield /#Delta p_{T}, raw stat. errors", len(self.ptBins), np.asarray(self.ptBinsArray, 'd'))
         self.histRawYield.GetYaxis().SetTitle("Raw D^{0} yield (1/GeV c^{-1})")
@@ -3339,6 +3787,7 @@ class Analysis():
         for i, bin in enumerate(self.ptBins):
             self.histRawYield.SetBinContent(i+1, bin.nominalFitResult.nSignal / self.histRawYield.GetBinWidth(i+1))
             # Error propagation with the bin width
+            # NOTE: The error used here is the symmetric Hesse error! For a final result, the asymmetric Minos error should be used, but that doesn't work with TH1 
             self.histRawYield.SetBinError(i+1, bin.nominalFitResult.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nominalFitResult.nSignal)
         self.histRawYield.SetStats(0)
 
@@ -3391,12 +3840,71 @@ class Analysis():
             r.gPad.SetLogy()
             self.canvasRawYieldPerEvent.Draw()
 
+    def rescale_ir_dependence(self, theta, cov_theta, n_data=2):
+        """
+        Apply data-driven IR dependence using fit parameters in theta, and the covariance matrix cov_theta.
+        Replaces the efficiency and the corrected spectrum
+        """
+        # Get the histograms for IR dependence rescaling
+        hist_rec_3d = self.dictMcHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto"]
+        hist_rec_3d.GetXaxis().SetRangeUser(self.minY, self.maxY)
+        hist_rec_2d = hist_rec_3d.Project3D('zy')
+        hist_rec_2d.SetName("hist_rec_2d")
+
+        hist_gen_3d = self.dictGenHists["analysis-asymmetric-pairing/output;1/MCTruthGenAfterBcCuts_D0FS/MyMcPtYInteractionRateHisto"]
+        hist_gen_3d.GetYaxis().SetRangeUser(self.minY, self.maxY)
+        hist_gen_2d = hist_gen_3d.Project3D('zx')
+        hist_gen_2d.SetName("hist_gen_2d")
+
+        # Get the 0th order correction factor
+        self.efficiency = r.TH1D("efficiency", "Efficiency", len(self.ptBinsArray) - 1, np.asarray(self.ptBinsArray, 'd'))
+        for i, bin in enumerate(self.ptBins):
+            lowerBin = hist_gen_2d.GetXaxis().FindBin(bin.lowerPt)
+            upperBin = hist_gen_2d.GetXaxis().FindBin(bin.upperPt) - 1
+            hist_rec_ir_orig = hist_rec_2d.ProjectionY(f"hist_rec_{bin.lowerPt}_{bin.upperPt}", firstxbin=lowerBin, lastxbin=upperBin)
+            hist_gen_ir_orig = hist_gen_2d.ProjectionY(f"hist_gen_{bin.lowerPt}_{bin.upperPt}", firstxbin=lowerBin, lastxbin=upperBin)
+            hist_gen_ir, hist_rec_ir, n_trimmed = utils.trim_trailing_zeros_root(hist_gen_ir_orig, hist_rec_ir_orig)
+            eff_i, eff_err_i, _, _ = apply_ir_rescaling(hist_rec_ir, hist_gen_ir, theta, cov_theta, 0, n_trimmed, n_data)
+            self.efficiency.SetBinContent(i+1, eff_i)
+            self.efficiency.SetBinError(i+1, eff_err_i)
+            self.efficiency.SetBinError(i+1, eff_err_i)
+
+        # Create a finely binned efficiency histogram to be used in reweighting
+        self.efficiencyFine = self.histD0PtMatched.Clone()
+        self.efficiencyFine.Reset()
+        for i in range(self.efficiencyFine.GetNbinsX()):
+            hist_rec_ir_orig = hist_rec_2d.ProjectionY(f"hist_rec_{i+1}", firstxbin=i+1, lastxbin=i+1)
+            hist_gen_ir_orig = hist_gen_2d.ProjectionY(f"hist_gen_{i+1}", firstxbin=i+1, lastxbin=i+1)
+            hist_gen_ir, hist_rec_ir, n_trimmed = utils.trim_trailing_zeros_root(hist_gen_ir_orig, hist_rec_ir_orig)
+            eff_i, eff_err_i, _, _ = apply_ir_rescaling(hist_rec_ir, hist_gen_ir, theta, cov_theta, 0, n_trimmed, n_data)
+            self.efficiencyFine.SetBinContent(i+1, eff_i)
+            self.efficiencyFine.SetBinError(i+1, eff_err_i)
+            self.efficiencyFine.SetBinError(i+1, eff_err_i)
+
+        # Now that the efficiency has been corrected, re-calcualte the corrected spectrum
+        self.calculate_corrected_spectrum()
+        
+        # Plot
+        if hasattr(self, 'canvasIrCorrected'):
+            del self.canvasIrCorrected
+        self.canvasIrCorrected = r.TCanvas("canvasIrCorrected", "canvasIrCorrected", 1400, 500)
+        self.canvasIrCorrected.Divide(2, 1)
+        self.canvasIrCorrected.cd(1)
+        self.efficiency.Draw()
+        self.efficiency.SetTitle(f"{self.efficiency.GetTitle()} (IR dep. corrected)")
+        self.efficiency.GetYaxis().SetTitle("Efficiency")
+        self.canvasIrCorrected.cd(2)
+        self.histCorrectedSpectrum.SetStats(0)
+        self.histCorrectedSpectrum.Draw()
+        r.gPad.SetLogy()
+        self.canvasIrCorrected.Draw()
+    
     def calculate_cross_section(self, statErrorsOnly=False, draw=True):
         # Get the branching fraction from the PDG
         import pdg
         pdgApi = pdg.connect()
         pdgD0 = pdgApi.get_particle_by_name('D0')
-        pdgD0KpiDecay = pdgApi.get(f'{pdgD0.baseid}.1/2025')
+        pdgD0KpiDecay = pdgApi.get(f'{pdgD0.baseid}.1/2026')
         branchingFractionD0Kpi = pdgD0KpiDecay.value
         print(f'Using branching fraction {branchingFractionD0Kpi} for {pdgD0KpiDecay.description}')
         # Calculate cross section
@@ -3415,12 +3923,28 @@ class Analysis():
                 err += (bin.relativeSysError * self.histCrossSection.GetBinContent(i+1))**2
             err = np.sqrt(err)
             self.histCrossSection.SetBinError(i+1, err)
+        # Create a TGraphAsymmErrors so that the asymmetric Minos errors can be shown
+        self.graphCrossSection = r.TGraphAsymmErrors(self.histCrossSection)
+        for i, bin in enumerate(self.ptBins):
+            errLower = (bin.nominalFitResult.relativeStatErrorLower * self.graphCrossSection.GetPointY(i))**2
+            errUpper = (bin.nominalFitResult.relativeStatErrorUpper * self.graphCrossSection.GetPointY(i))**2
+            if not statErrorsOnly:
+                errLower += (bin.relativeSysError * self.graphCrossSection.GetPointY(i))**2
+                errUpper += (bin.relativeSysError * self.graphCrossSection.GetPointY(i))**2
+            errLower = np.sqrt(errLower)
+            errUpper = np.sqrt(errUpper)
+            self.graphCrossSection.SetPointEYlow(i, errLower)
+            self.graphCrossSection.SetPointEYhigh(i, errUpper)
         if draw:
             if hasattr(self, 'canvasCrossSection'):
                 del self.canvasCrossSection
             self.canvasCrossSection = r.TCanvas("canvasCrossSection")
             self.canvasCrossSection.cd()
-            self.histCrossSection.Draw()
+            self.graphCrossSection.Draw('ap')
+            if statErrorsOnly:
+                self.graphCrossSection.SetTitle(f"{self.graphCrossSection.GetTitle()} (stat. errors only)")
+            self.graphCrossSection.GetYaxis().SetTitle("d^{2}#sigma/dp_{T}dy (mb/GeVc^{-1})")
+            self.graphCrossSection.GetXaxis().SetTitle("p_{T} (GeV/c)")
             r.gPad.SetLogy()
             self.canvasCrossSection.Draw()
 
@@ -3485,13 +4009,13 @@ class Analysis():
         self.canvasEfficiency.Draw()
 
 
-    def draw_fits_and_yield(self, showFitRangeOnly=False, nCols=3, showRawYield=True, showLegend=False, componentStyle=1):
+    def draw_fits_and_yield(self, showFitRangeOnly=False, nCols=3, showRawYield=True, showLegend=False, componentStyle=1, prependTitle="", width=400, height=333):
         # Figure out grid layout
         nPanels = len(self.ptBins) + showRawYield
         nRows = int(np.ceil(nPanels/nCols))
         if hasattr(self, 'canvasFitsYields'):
             del self.canvasFitsYields
-        self.canvasFitsYields = r.TCanvas("canvasFitsYields", "canvasFitsYields", nCols * 400, nRows * 333)
+        self.canvasFitsYields = r.TCanvas("canvasFitsYields", "canvasFitsYields", nCols * width, nRows * height)
         self.canvasFitsYields.Divide(nCols, nRows, 0.002, 0.01)
 
         self.textBoxesFitsYields = []
@@ -3503,24 +4027,40 @@ class Analysis():
             # Error propagation with the bin width
             self.histRawYield.SetBinError(i+1, bin.nominalFitResult.relativeStatError / self.histRawYield.GetBinWidth(i+1) * bin.nominalFitResult.nSignal)
             # Draw the histograms with fits
-            self.canvasFitsYields.cd(i+1)
-            self.legendsFitsYields.append(r.TLegend(0.12, 0.12, 0.4 if bin.nominalFitResult.corrBkgFunc is None else 0.5, 0.4))
+            pad = self.canvasFitsYields.cd(i+1)
+            pad.SetLeftMargin(0.125)
+            pad.SetRightMargin(0.025)
+            pad.SetBottomMargin(0.11)
+            pad.SetTopMargin(0.09)
+            self.legendsFitsYields.append(r.TLegend(0.15, 0.15, 0.43 if bin.nominalFitResult.corrBkgFunc is None else 0.53, 0.43))
             self.legendsFitsYields[i].SetBorderSize(0)
+            self.legendsFitsYields[i].SetTextSize(0.04)
             self.legendsFitsYields[i].SetFillStyle(0)
+            self.legendsFitsYields[i].SetFillColor(0)
+            self.legendsFitsYields[i].SetLineColor(0)
+            r.TGaxis.SetMaxDigits(3)
             bin.massPtSlice.Draw("E")
+            bin.massPtSlice.SetTitle(prependTitle + f"{bin.lowerPt} #leq p_{{ T}} < {bin.upperPt} GeV/c")
+            bin.massPtSlice.GetXaxis().SetTitle("m_{K#pi} (GeV/c^{2})")
+            bin.massPtSlice.GetYaxis().SetTitle(f"Counts per {bin.massPtSlice.GetBinWidth(1)*1000:.0f} MeV/c^{{2}}")
+            bin.massPtSlice.GetXaxis().SetTitleSize(0.05)
+            bin.massPtSlice.GetYaxis().SetTitleSize(0.05)
+            bin.massPtSlice.GetXaxis().SetLabelSize(0.04)
+            bin.massPtSlice.GetYaxis().SetLabelSize(0.04)
             bin.massPtSlice.SetLineColor(r.kBlack)
             bin.massPtSlice.SetMarkerStyle(r.kFullCircle)
             bin.massPtSlice.SetMarkerSize(0.5)
             bin.massPtSlice.SetStats(0)
+            bin.massPtSlice.SetMinimum(0.0)
             if showFitRangeOnly:
                 bin.massPtSlice.GetXaxis().SetRangeUser(bin.nominalFitResult.lowerMass, bin.nominalFitResult.upperMass)
             else:
                 bin.massPtSlice.GetXaxis().SetRangeUser(1.5, 2.2)
             self.legendsFitsYields[i].AddEntry(bin.massPtSlice, "Data")
             bin.nominalFitResult.fitFunc.Draw("same")
-            self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.fitFunc, "Total fit function")
+            self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.fitFunc, "Total fit function", "l")
             bin.nominalFitResult.backgroundFunc.Draw("same")
-            self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.backgroundFunc, f"Comb. background")
+            self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.backgroundFunc, f"Comb. background", "l")
             if componentStyle == 1:
                 # Draw the sum of the combinatorial background and reflected background on an existing canvas
                 def make_comb_plus_refl_callable(bbin):
@@ -3535,7 +4075,7 @@ class Analysis():
                 funcCombPlusRefl.SetLineStyle(r.kDashed)
                 funcCombPlusRefl.SetNpx(1000)
                 funcCombPlusRefl.Draw('same')
-                self.legendsFitsYields[i].AddEntry(funcCombPlusRefl, f"Comb. + refl bkg")
+                self.legendsFitsYields[i].AddEntry(funcCombPlusRefl, f"Comb. + refl bkg", "l")
                 if bin.nominalFitResult.corrBkgFunc is not None:
                     # bin.nominalFitResult.draw_combpluscorrbkgfunc()
                     def make_comb_plus_corr_callable(bbin):
@@ -3550,21 +4090,21 @@ class Analysis():
                     funcCombPlusCorr.SetLineStyle(r.kDashed)
                     funcCombPlusCorr.SetNpx(1000)
                     funcCombPlusCorr.Draw('same')
-                    self.legendsFitsYields[i].AddEntry(funcCombPlusCorr, "Comb. bkg + D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}")
+                    self.legendsFitsYields[i].AddEntry(funcCombPlusCorr, "Comb. bkg + D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}", "l")
             elif componentStyle == 2:
                 bin.nominalFitResult.signalFunc.Draw("same LF2")
-                self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.signalFunc, "Signal")
+                self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.signalFunc, "Signal", "l")
                 bin.nominalFitResult.dataReflFunc.Draw("same")
-                self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.dataReflFunc, f"Refl. background")
+                self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.dataReflFunc, f"Refl. background", "l")
                 if bin.nominalFitResult.corrBkgFunc is not None:
                     bin.nominalFitResult.corrBkgFunc.Draw("same")
-                    self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.corrBkgFunc, "D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}")
+                    self.legendsFitsYields[i].AddEntry(bin.nominalFitResult.corrBkgFunc, "D^{0}#rightarrow K^{-}#pi^{+}#pi^{0}", "l")
             # Draw data again so that it sits in front
             bin.massPtSlice.Draw("E same")
             if showLegend:
                 self.legendsFitsYields[i].Draw()
             # Text box with info
-            self.textBoxesFitsYields.append(r.TPaveText(0.65, 0.55, 0.95, 0.9, "NDC"))
+            self.textBoxesFitsYields.append(r.TPaveText(0.71, 0.55, 0.95, 0.9, "NDC"))
             self.textBoxesFitsYields[i].SetName(f"textbox_bin{i}")
             self.textBoxesFitsYields[i].SetFillColor(0)
             self.textBoxesFitsYields[i].SetFillStyle(0)
@@ -3574,8 +4114,8 @@ class Analysis():
             self.textBoxesFitsYields[i].SetTextSize(0.04)
             self.textBoxesFitsYields[i].AddText(f"#mu = {bin.nominalFitResult.fitMu:.3f}")
             self.textBoxesFitsYields[i].AddText(f"#sigma = {bin.nominalFitResult.fitSigma:.4f}")
-            self.textBoxesFitsYields[i].AddText(f"S = {bin.nominalFitResult.nSignal:.3f}")
-            self.textBoxesFitsYields[i].AddText(f"S/B (3#sigma)= {bin.nominalFitResult.signalToBackground:.3f}")
+            self.textBoxesFitsYields[i].AddText(f"S = {bin.nominalFitResult.nSignal:.0f}^{{+{bin.nominalFitResult.relativeStatErrorUpper*bin.nominalFitResult.nSignal:.0f}}}_{{-{bin.nominalFitResult.relativeStatErrorLower*bin.nominalFitResult.nSignal:.0f}}}")
+            self.textBoxesFitsYields[i].AddText(f"S/B (3#sigma) = {bin.nominalFitResult.signalToBackground:.3f}")
             self.textBoxesFitsYields[i].AddText(f"S/#sqrt{{S+B}} = {bin.nominalFitResult.signalSignificance:.1f}")
             # self.textBoxesFitsYields[i].AddText(f"Refl/S = {bin.nominalFitResult.nReflBackground/bin.nominalFitResult.nSignal:.3f}")
             self.textBoxesFitsYields[i].AddText(f"#chi^{{2}}/ndf = {bin.nominalFitResult.fitChi2Ndf:.3f}")
@@ -3603,20 +4143,32 @@ class Analysis():
                 self.linesFitrangeHigh[i].SetLineWidth(1)
                 self.linesFitrangeHigh[i].Draw()
 
-    def draw_reflected_fits(self, nCols=3):
+    def draw_reflected_fits(self, nCols=3, width=400, height=333):
         # Figure out grid layout
         nPanels = len(self.ptBins)
         nRows = int(np.ceil(nPanels/nCols))
         if hasattr(self, 'canvasReflFits'):
             del self.canvasReflFits
-        self.canvasReflFits = r.TCanvas("canvasReflFits", "canvasReflFits", nCols * 400, nRows * 333)
+        self.canvasReflFits = r.TCanvas("canvasReflFits", "canvasReflFits", nCols * width, nRows * height)
         self.canvasReflFits.Divide(nCols, nRows, 0.002, 0.01)
 
         self.textBoxesReflected = []
         for i, bin in enumerate(self.ptBins):
-            self.canvasReflFits.cd(i+1)
+            pad = self.canvasReflFits.cd(i+1)
             bin.massPtSliceReflected.Draw("E")
             bin.massPtSliceReflected.SetStats(0)
+            bin.massPtSliceReflected.SetTitle(f"{self.ptBins[i].lowerPt} #leq p_{{T}} < {self.ptBins[i].upperPt} GeV/c")
+            bin.massPtSliceReflected.SetTitleSize(0.05)
+            bin.massPtSliceReflected.GetXaxis().SetTitleSize(0.05)
+            bin.massPtSliceReflected.GetYaxis().SetTitleSize(0.05)
+            bin.massPtSliceReflected.GetXaxis().SetLabelSize(0.04)
+            bin.massPtSliceReflected.GetYaxis().SetLabelSize(0.04)
+            bin.massPtSliceReflected.GetYaxis().SetTitle(f"Counts per {bin.massPtSliceReflected.GetBinWidth(1)*1000:.0f} MeV/c^{{2}}")
+            bin.massPtSliceReflected.GetXaxis().SetTitle("Mass (GeV/c^{2})")
+            pad.SetLeftMargin(0.11)
+            pad.SetRightMargin(0.02)
+            pad.SetBottomMargin(0.12)
+            pad.SetTopMargin(0.08)
             bin.reflFunc1 = r.TF1(f"fReflGauss1_bin{bin.index}", fit_functions.signal, 1.3, 2.3, 3)
             bin.reflFunc1.SetParameters(np.array([bin.reflFunc.GetParameter(0) * bin.reflFunc.GetParameter(1),
                                                   bin.reflFunc.GetParameter(2), bin.reflFunc.GetParameter(3)], dtype='d'))
@@ -3635,7 +4187,7 @@ class Analysis():
             bin.reflFunc.SetLineColor(r.kRed)
             bin.reflFunc.Draw("same")
             # Text box with info
-            self.textBoxesReflected.append(r.TPaveText(0.6, 0.4, 0.85, 0.9, "NDC"))
+            self.textBoxesReflected.append(r.TPaveText(0.71, 0.4, 0.96, 0.9, "NDC"))
             self.textBoxesReflected[i].SetName(f"textboxreflected_bin{i}")
             self.textBoxesReflected[i].SetFillColor(0)
             self.textBoxesReflected[i].SetFillStyle(0)
@@ -3654,6 +4206,209 @@ class Analysis():
             self.textBoxesReflected[i].Draw()
 
         self.canvasReflFits.Draw()
+
+    def closure_test(self, truth_input, dir_response=None):
+        """
+        Perform a closure test of the efficiency correction procedure
+        truth_input  : numpy array of D0 pT spectrum truth values
+        dir_response : Directory of AnalysisResults files containing histograms used to construct
+                      the forward model
+        """
+        if not (hasattr(self, 'histTruthPt') and hasattr(self, 'histResponse')):
+            hist_name_gen = f"analysis-asymmetric-pairing/output;1/{self.groupNameD0Generated}/MyMcPtHisto"
+            hist_name_response = f"analysis-asymmetric-pairing/output;1/{self.groupNameD0PtMatched}/MyMCPtPtHisto"
+            hist_dict = get_histograms(dir_response, self.runList, [hist_name_gen, hist_name_response]) 
+            self.histResponse = hist_dict[hist_name_response]
+            self.histTruthPt = hist_dict[hist_name_gen]
+        if not (hasattr(self, 'responseMatrix')):
+            self.calculate_response_matrix(dir_response)
+        edges = self.ptBinsArray.copy()
+        edges.append(20.0)
+        edges = np.array(edges, dtype='d')
+        h_truth = self.histTruthPt.Rebin(len(edges)-1, "h_truth", edges)
+
+        # Create efficiency per truth bin to use in forward model
+        # Number of MC events within each truth bin which were reconstructed and selected somewhere
+        N_MC_reco = np.zeros(len(edges)-1)
+        h_response_proj_reco = h_response.ProjectionX()
+        for i in range(len(edges)-1):
+            N_MC_reco[i] = h_response_proj_reco.GetBinContent(i+1)
+        # Number of MC events within each truth bin
+        N_MC_truth = np.zeros(len(edges)-1)
+        for i in range(len(edges)-1):
+            N_MC_truth[i] = h_truth.GetBinContent(i+1)
+        # Absolute efficiency per truth bin
+        eff_truth = N_MC_reco / N_MC_truth
+        print("Truth efficiency (N rec in truth bin i / N gen in truth bin i)")
+        print(eff_truth)
+
+        # Pass truth input through forward model to create pseudo-data
+        pseudo_data = response_matrix @ (truth_input * eff_truth)
+
+        # Get the pseudodata and truth input into histogram form and convert to dN/dpT
+        hist_pseudo = r.TH1D("hist_pseudo", "hist_pseudo", len(edges)-2, edges[:-1])
+        hist_pseudo.GetXaxis().SetTitle("pT (GeV/c)")
+        hist_pseudo.GetYaxis().SetTitle("dN/dpT (1/GeV/c^{-1})")
+        hist_truth_input = r.TH1D("hist_truth_input", "hist_truth_input", len(edges)-2, edges[:-1])
+        hist_truth_input.GetXaxis().SetTitle("pT (GeV/c)")
+        hist_truth_input.GetYaxis().SetTitle("dN/dpT (1/GeV/c^{-1})")
+        for i in range(hist_pseudo.GetNbinsX()):
+            hist_pseudo.SetBinContent(i+1, pseudo_data[i] / hist_pseudo.GetBinWidth(i+1))
+            hist_truth_input.SetBinContent(i+1, truth_input[i] / hist_truth_input.GetBinWidth(i+1))
+
+        # Recreate the steps in the correction procedure
+        # Apply initial bin-by-bin efficiency
+        hist_pseudo_corrected0 = hist_pseudo.Clone()
+        hist_pseudo_corrected0.SetName("hist_pseudo_corrected0")
+        hist_pseudo_corrected0.Divide(self.efficiencyWithoutReweighting)
+        # Apply reweighting procedure
+        reweightingFunc = r.TF1("powerLaw", "[0]*x/TMath::Power((1+TMath::Power(x/[1],[3])),[2])", 0, 12)
+        reweightingFunc.SetParameters(394000, 1.83, 1.78, 2.87)
+        print("===== Fitting to the corrected spectrum for reweighting =====")
+        reweightingFitResults = hist_pseudo_corrected0.Fit(reweightingFunc, "LS")
+        efficiencyReweighted = self.efficiencyWithoutReweighting.Clone()
+        efficiencyReweighted.Reset()
+        efficiencyReweighted.SetName("efficiencyReweighted")
+        efficiencyReweighted.SetTitle("(Reconstructed / Generated) (reweighted)")
+        dpT = self.efficiencyFine.GetBinWidth(1)
+        # Calculate numerator of <epsilon>_i
+        for i in range(1, self.efficiencyFine.GetNbinsX() + 1):
+            binCenter = self.efficiencyFine.GetBinCenter(i)
+            binContent = self.efficiencyFine.GetBinContent(i)
+            binError = self.efficiencyFine.GetBinError(i)
+            weight = reweightingFunc.Eval(binCenter)
+            # Calculate weighted content
+            weightedContent = binContent * weight * dpT
+            weightedError = np.abs(weight) * dpT * binError # Error propagation
+            # Find the target bin and fill it
+            targetBin = efficiencyReweighted.FindBin(binCenter)
+            efficiencyReweighted.AddBinContent(targetBin, weightedContent)
+            currentErrorTarget = efficiencyReweighted.GetBinError(targetBin)
+            efficiencyReweighted.SetBinError(targetBin, np.sqrt(currentErrorTarget**2 + weightedError**2))
+        # Calculate denominator of <epsilon>_i
+        histDenominator = self.efficiencyWithoutReweighting.Clone()
+        histDenominator.Reset()
+        # For some reason the first iteration of IntegralError gives a nonsensical value, throw this away first
+        _ = reweightingFunc.IntegralError(0., 0.1, reweightingFitResults.GetParams(), reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
+        for i in range(1, efficiencyReweighted.GetNbinsX() + 1):
+            lowEdge = efficiencyReweighted.GetXaxis().GetBinLowEdge(i)
+            upEdge = efficiencyReweighted.GetXaxis().GetBinUpEdge(i)
+            print(f"--- Calculating integral of reweightingFunc from {lowEdge} to {upEdge} ---")
+            integral = reweightingFunc.Integral(lowEdge, upEdge)
+            histDenominator.SetBinContent(i, integral)
+            integralError = reweightingFunc.IntegralError(lowEdge, upEdge, reweightingFitResults.GetParams(), reweightingFitResults.GetCovarianceMatrix().GetMatrixArray(), epsilon=1e-8)
+            print(f"Bin {i}: integral = {integral} +- {integralError}")
+            histDenominator.SetBinError(i, integralError)
+        # Obtain <epsilon>_i as a histogram
+        efficiencyReweighted.Divide(histDenominator)
+        # Apply reweighted correction factor
+        hist_pseudo_corrected1 = hist_pseudo.Clone()
+        hist_pseudo_corrected1.SetName("hist_pseudo_corrected1")
+        hist_pseudo_corrected1.SetTitle("Corrected pT spectrum with reweighting")
+        hist_pseudo_corrected1.GetYaxis().SetTitle("dN/dp_{T}")
+        hist_pseudo_corrected1.Divide(efficiencyReweighted)
+
+        # Corrected, reweighted pseudodata is now compared to input truth
+        pseudo_corrected1 = np.zeros_like(truth_input[:-1])
+        for i in range(len(pseudo_corrected1)):
+            pseudo_corrected1[i] = hist_pseudo_corrected1.GetBinContent(i+1) * hist_pseudo_corrected1.GetBinWidth(i+1)
+        delta = (pseudo_corrected1 - truth_input[:-1]) / truth_input[:-1]
+        print(f"delta = {delta}")
+
+        if hasattr(self, 'canvasClosureTest'):
+            del self.canvasClosureTest
+        self.canvasClosureTest = r.TCanvas(f"canvasClosureTest", f"canvasClosureTest")
+        self.canvasClosureTest.cd()
+        _tf1_callables.append(hist_pseudo_corrected0)
+        hist_pseudo_corrected0.Draw()
+        hist_pseudo_corrected0.SetStats(0)
+        hist_pseudo_corrected0.SetLineColor(r.kRed)
+        _tf1_callables.append(hist_pseudo_corrected1)
+        hist_pseudo_corrected1.Draw("same")
+        hist_pseudo_corrected1.SetLineColor(r.kGreen-1)
+        _tf1_callables.append(hist_pseudo)
+        hist_pseudo.Draw("same")
+        hist_pseudo.SetLineColor(r.kBlue)
+        _tf1_callables.append(hist_truth_input)
+        hist_truth_input.Draw("same")
+        hist_truth_input.SetLineColor(r.kMagenta)
+        self.canvasClosureTest.Draw()
+
+    def calculate_response_matrix(self, dir_response=None):
+        if not (hasattr(self, 'histResponse')):
+            if dir_response is None:
+                dir_response = self.dirRec
+            hist_name_response = f"analysis-asymmetric-pairing/output;1/{self.groupNameD0PtMatched}/MyMCPtPtHisto"
+            hist_dict = get_histograms(dir_response, self.runList, [hist_name_response]) 
+            self.histResponse = hist_dict[hist_name_response]
+        edges = self.ptBinsArray.copy()
+        edges.append(20.0)
+        edges = np.array(edges, dtype='d')
+        h_response = r.TH2D("h_response", "h_response", len(edges)-1, edges, len(edges)-1, edges)
+        h_response = utils.rebin_th2_to_reference(self.histResponse, h_response, "")
+
+        # Construct the response matrix
+        response_matrix = np.zeros((len(edges)-1, len(edges)-1))
+        for i in range(len(edges)-1):
+            # Column i
+            column_sum = 0
+            for j in range(len(edges)-1):
+                # Row j
+                content = h_response.GetBinContent(i+1, j+1)
+                response_matrix[j, i] = content
+                column_sum += content
+            # Normalize column-wise
+            response_matrix[:, i] /= column_sum
+        print("Response matrix:")
+        with np.printoptions(precision=4, suppress=True, linewidth=100, threshold=1000):
+            print(response_matrix)
+        self.responseMatrix = response_matrix
+        self.histResponseFinalBins = h_response
+
+    def draw_response_matrix(self, savefig=None):
+        plt.rcParams.update({
+            "text.usetex": True,
+        })
+        fig, ax = plt.subplots(figsize=(6.5,6.5))
+        white_green_cmap = matplotlib.colors.LinearSegmentedColormap.from_list("WhiteGreen", ["white", "yellow", "lightgreen"])
+        im = ax.matshow(self.responseMatrix, cmap=white_green_cmap, norm=matplotlib.colors.SymLogNorm(0.08))
+        # Get colormap and normalizer from the image
+        cmap = im.get_cmap()
+        norm = im.norm
+        # Add text inside cells; choose white/black based on background brightness
+        for (i, j), z in np.ndenumerate(self.responseMatrix):
+            # Get RGBA color for this cell
+            rgba = cmap(norm(z))
+            r, g, b, _ = rgba
+            # Compute perceived luminance
+            # (standard formula: 0.299 R + 0.587 G + 0.114 B)
+            luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            # If background is dark, use white text; otherwise black
+            text_color = 'white' if luminance < 0.5 else 'black'
+            ax.text(
+                j, i,
+                '{:0.3f}'.format(z) if z!=0 else '{:.0f}'.format(z),
+                ha='center', va='center',
+                color=text_color
+            )
+            
+        # Number of rows and columns
+        n_rows, n_cols = self.responseMatrix.shape
+        # Set ticks at integer positions
+        ax.set_xticks(np.arange(n_cols))
+        ax.set_yticks(np.arange(n_rows))
+        # Make tick labels start at 1 instead of 0
+        ax.set_xticklabels(np.arange(1, n_cols + 1))
+        ax.set_yticklabels(np.arange(1, n_rows + 1))
+        # Axis titles
+        ax.set_xlabel('Truth $p_\mathrm{T}$ bin', fontsize=15, labelpad=10)
+        ax.xaxis.set_label_position('top')   # move label to top
+        ax.tick_params(top=True, bottom=False)  # optional: show only top ticks
+        ax.set_ylabel('Reconstructed $p_\mathrm{T}$ bin', fontsize=15, labelpad=10)
+
+        if savefig is not None:
+            plt.savefig(savefig)
+        plt.show()
 
 class McAnalysis():
     """Class for analysing the MC only"""
@@ -3681,6 +4436,8 @@ class McAnalysis():
         self.kaonLegCutName = cutNames["kaonLegCutName"]
         self.pionLegCutName = cutNames["pionLegCutName"]
         self.pairCutName = cutNames["pairCutName"]
+        if self.pairCutName != "":
+            self.pairCutName = "_" + self.pairCutName
         # pT bins to be used in the differential cross section
         self.ptBinsArray = ptBins
         self.ptBins = []
@@ -3696,7 +4453,7 @@ class McAnalysis():
 
     def prepare_histograms(self):
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
-        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}_KPiFromD0FS"
+        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}_KPiFromD0FS"
 
         # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
         fullNamesGen = ["MCTruthGenRec_D0FS", "MCTruthGenSel_D0FS", "MCTruthGenSelDaughtersInAcc_KPiFromD0FS", "MCTruthGenRecDaughtersInAcc_KPiFromD0FS", "MCTruthGenAfterBcCutsDaughtersInAcc_KPiFromD0FS"]
@@ -3704,7 +4461,7 @@ class McAnalysis():
         fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
         fullNamesGen.append(fullNameHistD0PtYGenerated)
         # Main rec. matched histogram, and the rec. lvl. histograms used for factorized efficiencies later
-        fullNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4_{self.pairCutName}"]
+        fullNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4", f"{self.kaonLegCutName}:{self.pionLegCutName}_singleGapTrackCuts4{self.pairCutName}"]
         fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + fullNameRec + "_KPiFromD0FS/Y_PtFine" for fullNameRec in fullNamesMc]
         groupNameD0Matched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched
         fullNameHistD0YPtMatched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched + "/Y_PtFine"

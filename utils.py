@@ -1,4 +1,5 @@
 import ROOT as r
+import seaborn as sns
 import numpy as np
 from array import array
 from scipy.stats import poisson
@@ -63,44 +64,73 @@ def flip_th2_axes(h):
     return hf
 
 def rebin_th2_to_reference(h_src, h_ref, name_suffix):
-    """Create a clone of h_ref's binning and fill it from h_src
-       by matching (x,y) bin centers.
     """
-    xaxis_ref = h_ref.GetXaxis()
-    yaxis_ref = h_ref.GetYaxis()
+    Create a clone of h_ref's binning and fill it from h_src
+    by matching (x,y) bin centers.
+    """
+    # Create output histogram with same binning as h_ref
+    name = h_ref.GetName() + name_suffix
+    title = h_ref.GetTitle()
 
-    nx = xaxis_ref.GetNbins()
-    ny = yaxis_ref.GetNbins()
+    xaxis = h_ref.GetXaxis()
+    yaxis = h_ref.GetYaxis()
 
-    # copy bin edges from reference
-    x_edges = [xaxis_ref.GetBinLowEdge(i) for i in range(1, nx+2)]
-    y_edges = [yaxis_ref.GetBinLowEdge(i) for i in range(1, ny+2)]
+    # Extract bin edges from reference
+    import array
+    x_edges = array.array("d", [
+        xaxis.GetBinLowEdge(i)
+        for i in range(1, xaxis.GetNbins() + 2)
+    ])
+    y_edges = array.array("d", [
+        yaxis.GetBinLowEdge(i)
+        for i in range(1, yaxis.GetNbins() + 2)
+    ])
 
-    h_new = r.TH2F(
-        h_src.GetName() + name_suffix,
-        h_src.GetTitle() + name_suffix,
-        nx, array('d', x_edges),
-        ny, array('d', y_edges),
+    h_out = r.TH2D(
+        name, title,
+        len(x_edges) - 1, x_edges,
+        len(y_edges) - 1, y_edges
     )
-    h_new.Sumw2()
+    h_out.Sumw2()
 
-    # fill by copying content to matching bins (via centers)
-    for ix in range(1, nx+1):
-        x = xaxis_ref.GetBinCenter(ix)
-        for iy in range(1, ny+1):
-            y = yaxis_ref.GetBinCenter(iy)
+    # Optional: detach from any directory (safer in PyROOT)
+    h_out.SetDirectory(0)
 
-            # find corresponding bin in the source
-            ix_src = h_src.GetXaxis().FindBin(x)
-            iy_src = h_src.GetYaxis().FindBin(y)
+    # Loop over source bins (excluding under/overflow)
+    nx_src = h_src.GetNbinsX()
+    ny_src = h_src.GetNbinsY()
 
-            c = h_src.GetBinContent(ix_src, iy_src)
-            e = h_src.GetBinError(ix_src, iy_src)
+    for ix in range(1, nx_src + 1):
+        x_center = h_src.GetXaxis().GetBinCenter(ix)
+        for iy in range(1, ny_src + 1):
+            y_center = h_src.GetYaxis().GetBinCenter(iy)
 
-            h_new.SetBinContent(ix, iy, c)
-            h_new.SetBinError(ix, iy, e)
+            content = h_src.GetBinContent(ix, iy)
+            error   = h_src.GetBinError(ix, iy)
 
-    return h_new
+            if content == 0 and error == 0:
+                continue
+
+            # Find target bin in reference binning
+            new_ix = h_out.GetXaxis().FindBin(x_center)
+            new_iy = h_out.GetYaxis().FindBin(y_center)
+
+            # Skip if outside range (under/overflow in ref)
+            if (new_ix < 1 or new_ix > h_out.GetNbinsX() or
+                new_iy < 1 or new_iy > h_out.GetNbinsY()):
+                continue
+
+            # Add content and combine errors in quadrature
+            old_content = h_out.GetBinContent(new_ix, new_iy)
+            old_error   = h_out.GetBinError(new_ix, new_iy)
+
+            new_content = old_content + content
+            new_error = (old_error**2 + error**2)**0.5
+
+            h_out.SetBinContent(new_ix, new_iy, new_content)
+            h_out.SetBinError(new_ix, new_iy, new_error)
+
+    return h_out
 
 def scale_histogram_xaxis(h_in, scale, name_suffix="_scaled"):
     """
@@ -538,3 +568,174 @@ def equal_stat_y_slices(h2, n_slices, start_bin=1, end_bin=None):
         prev_hi = hi
 
     return slices
+
+def trim_trailing_zeros(h_ref, *h_others):
+    """
+    Remove bins from scikit-hep/hist histograms based on trailing zeros in h_ref
+    """
+    vals = h_ref.values()
+    nonzero = vals != 0
+
+    if not nonzero.any():
+        # nothing non-zero; return original histograms unchanged or empty
+        return (h_ref,) + h_others
+
+    last_nonzero_idx = int(np.where(nonzero)[0][-1])
+    mask = np.arange(len(vals)) <= last_nonzero_idx
+
+    # print(h_ref[:last_nonzero_idx+1])
+    h_ref_trimmed = h_ref[0:last_nonzero_idx+1]
+    h_others_trimmed = tuple(h[0:last_nonzero_idx+1] for h in h_others)
+    n_trimmed = len(mask)-np.sum(mask)
+    print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.axes[0].name}")
+    return (h_ref_trimmed,) + h_others_trimmed, n_trimmed
+
+def trim_trailing_zeros_root(h_ref, *h_others):
+    """
+    Trim trailing zero bins from a reference 1D ROOT histogram (TH1*),
+    and apply the same trimming to other histograms with identical binning.
+
+    Parameters
+    ----------
+    h_ref : ROOT.TH1
+        Reference histogram; trailing zeros are determined from this one.
+    *h_others : ROOT.TH1
+        Other histograms to trim using the same bin range.
+
+    Returns
+    -------
+    tuple of ROOT.TH1
+        (h_ref_trimmed, h_other1_trimmed, ...)
+
+    Notes
+    -----
+    - Only works for 1D histograms.
+    - Assumes all histograms have the same number of bins and bin edges.
+    """
+    nbins = h_ref.GetNbinsX()
+
+    # Find last non-zero bin (ignore underflow bin 0 and overflow nbins+1)
+    last_nonzero = 0
+    for i in range(1, nbins + 1):
+        if h_ref.GetBinContent(i) != 0:
+            last_nonzero = i
+
+    if last_nonzero == 0:
+        # All bins are zero: return original histograms unchanged
+        print(f"All bins in {h_ref.GetName()} are zero")
+        n_trimmed = 0
+        return (h_ref,) + h_others + (n_trimmed,)
+
+    n_trimmed = nbins - last_nonzero
+
+    # New number of bins is last_nonzero; keep same axis range
+    xmin = h_ref.GetXaxis().GetXmin()
+    xmax = h_ref.GetBinLowEdge(last_nonzero + 1)  # upper edge of last kept bin
+
+    def _trim_one(h, name_suffix="_trimmed"):
+        # Create a new histogram with fewer bins and same range
+        name = h.GetName() + name_suffix
+        title = h.GetTitle()
+        h_trim = r.TH1D(name, title, last_nonzero, xmin, xmax)
+
+        # Copy contents (and errors)
+        for i in range(1, last_nonzero + 1):
+            content = h.GetBinContent(i)
+            h_trim.SetBinContent(i, content)
+            err = h.GetBinError(i)
+            h_trim.SetBinError(i, err)
+
+        return h_trim
+
+    h_ref_trim = _trim_one(h_ref)
+    h_others_trim = tuple(_trim_one(h) for h in h_others)
+
+    print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.GetName()}")
+    return (h_ref_trim,) + h_others_trim + (n_trimmed,)
+
+def add_graphs(g1, g2, name="g_sum", title=""):
+    n1 = g1.GetN()
+    n2 = g2.GetN()
+    if n1 != n2:
+        raise ValueError("Graphs have different number of points")
+
+    g_sum = r.TGraphAsymmErrors(n1)
+    g_sum.SetName(name)
+    g_sum.SetTitle(title)
+
+    for i in range(n1):
+        x1 = g1.GetX()[i]
+        y1 = g1.GetY()[i]
+        exl1 = g1.GetErrorXlow(i)
+        exh1 = g1.GetErrorXhigh(i)
+        eyl1 = g1.GetErrorYlow(i)
+        eyh1 = g1.GetErrorYhigh(i)
+
+        x2 = g2.GetX()[i]
+        y2 = g2.GetY()[i]
+        exl2 = g2.GetErrorXlow(i)
+        exh2 = g2.GetErrorXhigh(i)
+        eyl2 = g2.GetErrorYlow(i)
+        eyh2 = g2.GetErrorYhigh(i)
+
+        # sanity: same x (within tolerance)
+        if abs(x1 - x2) > 1e-9:
+            raise ValueError(f"x mismatch at point {i}: {x1} vs {x2}")
+
+        x  = x1
+        y  = y1 + y2
+
+        # choose x errors (here: take the max; or take from g1 if they’re identical)
+        exl = max(exl1, exl2)
+        exh = max(exh1, exh2)
+
+        # combine y errors in quadrature (assume uncorrelated)
+        eyl = np.sqrt(eyl1**2 + eyl2**2)
+        eyh = np.sqrt(eyh1**2 + eyh2**2)
+
+        g_sum.SetPoint(i, x, y)
+        g_sum.SetPointError(i, exl, exh, eyl, eyh)
+
+    return g_sum
+
+def set_alice_style():
+    r.gStyle.Reset("Plain");
+    r.gStyle.SetOptTitle(0);
+    r.gStyle.SetOptStat(0);
+    r.gStyle.SetPalette(1);
+    r.gStyle.SetCanvasColor(10)
+    r.gStyle.SetCanvasBorderMode(0);
+    r.gStyle.SetFrameLineWidth(1);
+    r.gStyle.SetFrameFillColor(r.kWhite);
+    r.gStyle.SetPadColor(10);
+    r.gStyle.SetPadTickX(1);
+    r.gStyle.SetPadTickY(1);
+    r.gStyle.SetPadBottomMargin(0.15);
+    r.gStyle.SetPadLeftMargin(0.15);
+    r.gStyle.SetHistLineWidth(1);
+    r.gStyle.SetHistLineColor(r.kRed);
+    r.gStyle.SetFuncWidth(2);
+    r.gStyle.SetFuncColor(r.kGreen);
+    r.gStyle.SetLineWidth(2);
+    r.gStyle.SetLabelSize(0.045,"xyz");
+    r.gStyle.SetLabelOffset(0.01,"y");
+    r.gStyle.SetLabelOffset(0.01,"x");
+    r.gStyle.SetLabelColor(r.kBlack,"xyz");
+    r.gStyle.SetTitleSize(0.05,"xyz");
+    r.gStyle.SetTitleOffset(1.25,"y");
+    r.gStyle.SetTitleOffset(1.25,"x");
+    r.gStyle.SetTitleFillColor(r.kWhite);
+    r.gStyle.SetTextSizePixels(26);
+    r.gStyle.SetTextFont(42);
+    r.gStyle.SetLegendBorderSize(0);
+    r.gStyle.SetLegendFillColor(r.kWhite);
+    r.gStyle.SetLegendFont(42);
+
+def create_seaborn_palette(name="bright"):
+    rgb_list = sns.color_palette(name)
+    colors = []
+    base_index = 10000
+    for i, rgb in enumerate(rgb_list):
+        c = r.TColor(rgb[0], rgb[1], rgb[2])
+        colors.append(c)
+    return colors
