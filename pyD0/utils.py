@@ -1,0 +1,1005 @@
+import ROOT as r
+import uproot
+import seaborn as sns
+import numpy as np
+from array import array
+from scipy.stats import poisson
+import matplotlib.pyplot as plt
+from boost_histogram import axis
+import hist
+
+defaultITSROFlength = 14821e-9 # seconds
+
+def lowest_safe_hf_mass(pt):
+    """
+    Given the HF tree in train 586890, return the lowest mass which seems safe within the pT range [minPt, maxPt],
+    from an inspection of mass vs pT histogram
+    """
+    if pt < 3.0:
+        return 1.665
+    elif pt < 5.0:
+        return 1.655
+    elif pt < 6.0:
+        return 1.465
+    else:
+        return 1.37
+
+
+def get_mass_histogram_Kpipi0(df, minPt, maxPt):
+    df = df.Filter("fFlagMc == -2 || fFlagMc == 2") # DecayChannelMain::D0ToPiKPi0
+    df = df.Filter(f"fPt >= {minPt} && fPt < {maxPt}")
+    h = df.Histo1D(
+        (f"hCorrBkg_{minPt:.2f}_{maxPt:.2f}",
+         "Kpi invariant mass, reco D0 -> Kpipi0;Counts;fM",
+         150, 1.0, 2.5),
+        "fM"
+    )
+    return h.GetValue()
+
+def get_mass_pt_histogram_Kpipi0(df):
+    df = df.Filter("fFlagMc == -2 || fFlagMc == 2") # DecayChannelMain::D0ToPiKPi0
+    # h2_ptr = df.Histo2D(("h2", "title;x;y", 50, 0., 1., 40, -2., 2.), "x", "y")
+    h = df.Histo2D(
+        (f"hCorrBkg",
+         "Kpi invariant mass, reco D0 -> Kpipi0;fM;fPt",
+         1000, 1.3, 2.3,
+         960, 0.0, 12.0),
+        "fM", "fPt"
+    )
+    return h.GetValue()
+
+
+def read_hf_tree(file_name):
+    tree_name = "O2hfcandd0lite"
+
+    chain = r.TChain(tree_name)
+
+    f = r.TFile.Open(file_name)
+    for key in f.GetListOfKeys():
+        obj = key.ReadObj()
+        if obj.InheritsFrom("TDirectoryFile") and key.GetName().startswith("DF_"):
+            dname = key.GetName()
+            chain.Add(f"{file_name}/{dname}/{tree_name}")
+
+    print(f"Read {chain.GetEntries()} entries from {file_name}/{tree_name}")
+    return r.RDataFrame(chain)
+
+def propagate_error_product(A, B, errA, errB, covAB):
+    # Error propagation for the product of two variables r = A*B
+    var = (B*errA)**2 + (A*errB)**2 + 2*A*B*covAB
+    return np.sqrt(var)
+
+def flip_th2_axes(h):
+    hf = r.TH2F(f'{h.GetName()}_flip', f'{h.GetName()}_flip', h.GetNbinsY(), h.GetYaxis().GetXmin(), h.GetYaxis().GetXmax(), h.GetNbinsX(), h.GetXaxis().GetXmin(), h.GetXaxis().GetXmax())
+    hf.GetXaxis().SetTitle(h.GetYaxis().GetTitle())
+    hf.GetYaxis().SetTitle(h.GetXaxis().GetTitle())
+    for i in range(h.GetNbinsX() + 1):
+        for j in range(h.GetNbinsY() + 1):
+            hf.SetBinContent(j, i, h.GetBinContent(i, j))
+            hf.SetBinError(j, i, h.GetBinError(i, j))
+    return hf
+
+def rebin_th2_to_reference(h_src, h_ref, name_suffix):
+    """
+    Create a clone of h_ref's binning and fill it from h_src
+    by matching (x,y) bin centers.
+    """
+    # Create output histogram with same binning as h_ref
+    name = h_ref.GetName() + name_suffix
+    title = h_ref.GetTitle()
+
+    xaxis = h_ref.GetXaxis()
+    yaxis = h_ref.GetYaxis()
+
+    # Extract bin edges from reference
+    import array
+    x_edges = array.array("d", [
+        xaxis.GetBinLowEdge(i)
+        for i in range(1, xaxis.GetNbins() + 2)
+    ])
+    y_edges = array.array("d", [
+        yaxis.GetBinLowEdge(i)
+        for i in range(1, yaxis.GetNbins() + 2)
+    ])
+
+    h_out = r.TH2D(
+        name, title,
+        len(x_edges) - 1, x_edges,
+        len(y_edges) - 1, y_edges
+    )
+    h_out.Sumw2()
+
+    # Optional: detach from any directory (safer in PyROOT)
+    h_out.SetDirectory(0)
+
+    # Loop over source bins (excluding under/overflow)
+    nx_src = h_src.GetNbinsX()
+    ny_src = h_src.GetNbinsY()
+
+    for ix in range(1, nx_src + 1):
+        x_center = h_src.GetXaxis().GetBinCenter(ix)
+        for iy in range(1, ny_src + 1):
+            y_center = h_src.GetYaxis().GetBinCenter(iy)
+
+            content = h_src.GetBinContent(ix, iy)
+            error   = h_src.GetBinError(ix, iy)
+
+            if content == 0 and error == 0:
+                continue
+
+            # Find target bin in reference binning
+            new_ix = h_out.GetXaxis().FindBin(x_center)
+            new_iy = h_out.GetYaxis().FindBin(y_center)
+
+            # Skip if outside range (under/overflow in ref)
+            if (new_ix < 1 or new_ix > h_out.GetNbinsX() or
+                new_iy < 1 or new_iy > h_out.GetNbinsY()):
+                continue
+
+            # Add content and combine errors in quadrature
+            old_content = h_out.GetBinContent(new_ix, new_iy)
+            old_error   = h_out.GetBinError(new_ix, new_iy)
+
+            new_content = old_content + content
+            new_error = (old_error**2 + error**2)**0.5
+
+            h_out.SetBinContent(new_ix, new_iy, new_content)
+            h_out.SetBinError(new_ix, new_iy, new_error)
+
+    return h_out
+
+def scale_histogram_xaxis(h_in, scale, name_suffix="_scaled"):
+    """
+    Return a new TH1 with the x-axis scaled by 'scale':
+      x_new = scale * x_old
+
+    Parameters
+    ----------
+    h_in : ROOT.TH1
+        Input 1D histogram.
+    scale : float
+        Scale factor for the x axis.
+    name_suffix : str, optional
+        Suffix appended to the cloned histogram name.
+
+    Returns
+    -------
+    ROOT.TH1
+        New histogram with scaled x-axis and re-distributed contents.
+    """
+    if scale == 0:
+        raise ValueError("Scale factor must be nonzero.")
+
+    # Get original properties
+    nbins = h_in.GetNbinsX()
+    xaxis = h_in.GetXaxis()
+    xmin  = xaxis.GetXmin()
+    xmax  = xaxis.GetXmax()
+
+    # Create a new histogram with scaled range and same binning
+    hname = h_in.GetName() + name_suffix + "_" + str(scale)
+    htitle = h_in.GetTitle() + f" (x scaled by {scale})"
+    h_out = r.TH1F(hname, htitle, nbins, xmin * scale, xmax * scale)
+    h_out.Sumw2()  # enable proper error handling
+
+    # Loop over bins (1..nbins, skipping under/overflow here)
+    for ibin in range(1, nbins + 1):
+        x_center = xaxis.GetBinCenter(ibin)
+        new_x = x_center * scale
+
+        content = h_in.GetBinContent(ibin)
+        error   = h_in.GetBinError(ibin)
+
+        if content == 0 and error == 0:
+            continue
+
+        # Find corresponding bin in the new histogram
+        jbin = h_out.FindBin(new_x)
+
+        # Add content
+        old_content = h_out.GetBinContent(jbin)
+        h_out.SetBinContent(jbin, old_content + content)
+
+        # Combine errors in quadrature
+        old_error = h_out.GetBinError(jbin)
+        h_out.SetBinError(jbin, np.sqrt(old_error**2 + error**2))
+
+    # Optionally: copy entries, etc.
+    h_out.SetEntries(h_in.GetEntries())
+
+    return h_out
+
+def P_0(IR, ITSROFlength=defaultITSROFlength, interactionRateFactor=1.):
+    # Probability of 0 collisions in one ITS ROF
+    # IR (Hz), ITSROFlength (s)
+    # Not normalized, just returns the probability as a fraction
+    return np.array(np.exp(-IR * interactionRateFactor * ITSROFlength))
+
+# TODO: The "reference" VtxNContrib histogram, which we integrate to find p_ncontribs_leq, should in principle be the "true" VtxNContrib distribution.
+#       Test how big an effect it is to fix this histogram to e.g. a well-behaved low IR run.
+
+def prob_winner(n_contrib, n_lost, vtx_n_contrib_hist, ir, its_rof_length=defaultITSROFlength):
+    """
+    Given a UPC interaction rate IR and a distribution of VtxNContrib,
+    calculate the probability that an event with n_contrib vertex contributors caused
+    n_lost other events to not be reconstructed due to ITSROF pileup
+    """
+    if n_contrib < 16:
+        n_contrib_bin = vtx_n_contrib_hist.GetXaxis().FindBin(n_contrib)
+    else:
+        n_contrib_bin = vtx_n_contrib_hist.GetXaxis().FindBin(16) # Events with n_contrib>=16 can only win over events with n_contrib<16. Otherwise, the competitor survives
+    p_ncontribs_leq = vtx_n_contrib_hist.Integral(0, n_contrib_bin) / vtx_n_contrib_hist.Integral()
+    p_n_pileup = poisson.pmf(n_lost, ir * its_rof_length)
+    return p_n_pileup * (p_ncontribs_leq ** n_lost), p_ncontribs_leq
+
+
+def get_n_lost_events(vtx_n_contrib_hist, hadronic_ir, upc_ir_factor, its_rof_length=defaultITSROFlength, min_num=1e-4, vtx_n_contrib_hist_reference=None, do_print=False):
+    """
+    Returns a list of number of lost events for each bin in the vtx_n_contrib_hist
+    """
+    if vtx_n_contrib_hist_reference is None:
+        vtx_n_contrib_hist_reference = vtx_n_contrib_hist
+    upc_ir = hadronic_ir * upc_ir_factor
+    list_n_lost = []
+    for i in range(1, vtx_n_contrib_hist.GetNbinsX() + 1):
+        n_contrib = int(vtx_n_contrib_hist.GetBinLowEdge(i))
+        k = 1
+        term = vtx_n_contrib_hist.GetBinContent(i) * prob_winner(n_contrib, k, vtx_n_contrib_hist_reference, upc_ir)[0] # Probability that we lost 1 event 
+        sum_terms = 0
+        while (term > min_num): # Stop when next term gives negligible event loss
+            sum_terms += term
+            k += 1
+            term = vtx_n_contrib_hist.GetBinContent(i) * k * prob_winner(n_contrib, k, vtx_n_contrib_hist_reference, upc_ir)[0] 
+        list_n_lost.append(sum_terms)
+        if do_print:
+            print(f"At bin {i}, VtxNcontrib={n_contrib} we have {vtx_n_contrib_hist.GetBinContent(i)} events, and lost {list_n_lost[-1]} events.")
+            print(f"  The expected event loss per visible event is {sum_terms / vtx_n_contrib_hist.GetBinContent(i) if sum_terms > 0 else 0}, calculated using P(n <= {n_contrib}) = {prob_winner(n_contrib, k, vtx_n_contrib_hist_reference, upc_ir)[1]}") 
+            print(f"  Used {k-1} terms in the series")
+    return list_n_lost
+
+def collect_instantaneous_ir(run_list, df, interval=60):
+    """
+    Collect interaction rate as a function of time by polling the CCDB.
+    run_list: List of run numbers
+    df: Dataframe containing SOR and EOR timestamps for the run
+    interval: Timestamp interval in seconds used for CCDB fetching
+    """
+    r.gSystem.Load("libO2CCDB.so")
+    r.gInterpreter.Declare('#include "ctpRateFetcher.h"')
+    
+    for run in run_list:
+        fetcher = r.o2.ctpRateFetcher()
+        ccdb_manager = r.o2.ccdb.BasicCCDBManager.instance()
+        # Configure CCDB manager, mirroring the DQ table-reader
+        ccdb_manager.setURL("http://alice-ccdb.cern.ch")
+        ccdb_manager.setCaching(True)
+        ccdb_manager.setLocalObjectValidityChecking()
+        print(f"--- Working on run {run} ---")
+        run_number = int(run)
+        sor = int(df.loc[run, "Start timestamp TRG"]) # Epoch time in ms
+        eor = int(df.loc[run, "End timestamp TRG"]) # Epoch time in ms
+        print(f"Fetching IR in run {run_number} from timestamp {sor} to {eor} in {interval} second intervals")
+        ts = []
+        irs = []
+        t = sor
+        while (t < eor):
+            ts.append(t)
+            irs.append(fetcher.fetch(ccdb_manager, t, run_number, "ZNC hadronic"))
+            t += 1000 * interval
+        # Make sure to get the final point
+        ts.append(eor)
+        irs.append(fetcher.fetch(ccdb_manager, eor, run_number, "ZNC hadronic"))
+        # Format and save
+        ts = np.array(ts)
+        irs = np.array(irs)
+        data = np.column_stack((ts, irs))
+        np.savetxt(f"/home/sigurd/cernbox/notebooks/pyD0/interactionRates/{run_number}.txt", data, fmt="%i %.6e", header="timestamp_ms interaction_rate")
+
+def integrate_between_ys(xs, ys, y0, y1):
+    """
+    Integrate the function ys along xs in every region where y0 <= y <= y1
+    Values between datapoints are linearly interpolated
+    Returns:
+    Integral,
+    Array of x values where y crossed y0 or y1,
+    Array of y values where y crossed y0 or y1,
+    """
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)
+
+    if np.any(np.diff(xs) <= 0):
+        raise ValueError("xs must be strictly increasing")
+
+    total = 0.0
+    x_cross = []
+    y_cross = []
+
+    # Track whether the global first/last point is used in the integral
+    uses_first = False
+    uses_last = False
+
+    n = len(xs)
+
+    for i in range(n - 1):
+        x0, x1 = xs[i], xs[i+1]
+        y_start, y_end = ys[i], ys[i+1]
+
+        seg_min = min(y_start, y_end)
+        seg_max = max(y_start, y_end)
+
+        # If segment doesn't intersect [y0, y1] at all, skip it
+        if seg_max <= y0 or seg_min >= y1:
+            continue
+
+        # Local containers (segment including interpolation points)
+        x_local = [x0]
+        y_local = [y_start]
+
+        # Linear interpolation helper: x at given y on this segment
+        if y_end != y_start:
+            m = (x1 - x0) / (y_end - y_start)  # dx/dy
+            def x_at_y(y):
+                return x0 + (y - y_start) * m
+        else:
+            m = None
+
+        # Crossings with y0 and y1
+        for y_level in (y0, y1):
+            if (y_level - y_start) * (y_level - y_end) < 0 and m is not None:
+                xc = x_at_y(y_level)
+                x_local.append(xc)
+                y_local.append(y_level)
+                x_cross.append(xc)
+                y_cross.append(y_level)
+
+        x_local.append(x1)
+        y_local.append(y_end)
+
+        # Sort along x
+        x_local = np.array(x_local)
+        y_local = np.array(y_local)
+        order = np.argsort(x_local)
+        x_local = x_local[order]
+        y_local = y_local[order]
+
+        # Integrate only sub‑segments fully inside [y0, y1]
+        for j in range(len(x_local) - 1):
+            xl0, xl1 = x_local[j],   x_local[j+1]
+            yl0, yl1 = y_local[j],   y_local[j+1]
+
+            if (y0 <= yl0 <= y1) and (y0 <= yl1 <= y1):
+                total += np.trapezoid([yl0, yl1], x=[xl0, xl1])
+
+                # Mark use of global endpoints if this sub‑segment touches them
+                if i == 0 and np.isclose(xl0, xs[0]):
+                    uses_first = True
+                if i+1 == n-1 and np.isclose(xl1, xs[-1]):
+                    uses_last = True
+
+    # If the integration reaches the first/last point, store them as "crossings"
+    if uses_first:
+        x_cross.insert(0, xs[0])
+        y_cross.insert(0, ys[0])
+    if uses_last:
+        x_cross.append(xs[-1])
+        y_cross.append(ys[-1])
+
+    return total, np.array(x_cross), np.array(y_cross)
+
+def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root", do_print=False):
+    """
+    ir_bin_edges: kHz
+    """
+    print(f"Processing {len(run_list)} runs...")
+    lumi_file = r.TFile.Open("/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root")
+    lumi_hist_znc = lumi_file.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
+    hist = r.TH1D('lumi_ir', 'lumi_ir', len(ir_bin_edges)-1, np.asarray(ir_bin_edges, 'd'))
+    hist.SetDirectory(0)
+    hist.GetXaxis().SetTitle('ZNC hadronic interaction rate (Hz)')
+    hist.GetYaxis().SetTitle('ZNC luminosity (1/µb)')
+    for i, (ir_0, ir_1) in enumerate(zip(ir_bin_edges[:-1], ir_bin_edges[1:])):
+        print(f"--- {ir_0:.3f} < IR < {ir_1:.3f} kHz ---")
+        L = 0
+        n_contributing_runs = 0
+        for run in run_list:
+            data = np.genfromtxt(f"/home/sigurd/cernbox/notebooks/pyD0/interactionRates/{run}.txt", names=True)
+            ts = data['timestamp_ms']
+            ts = (ts - ts[0])/1000 # Convert to seconds from SOR
+            irs = data['interaction_rate']
+            irs = irs/1000 # Convert from Hz to kHz
+            
+            integrated_lumi = lumi_hist_znc.GetBinContent(lumi_hist_znc.GetXaxis().FindBin(run))
+            factor = integrated_lumi / np.trapezoid(irs, ts)
+            lumis = factor * irs
+            
+            N, ts_crossings, ir_crossings = integrate_between_ys(ts, irs, ir_0, ir_1)
+            tmp_L = factor * N
+            if tmp_L > 0:
+                n_contributing_runs += 1
+                if do_print:
+                    print(f"  Run {run} has {tmp_L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
+            L += tmp_L
+
+        print(f"  {n_contributing_runs} runs contributed in total {L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
+        hist.SetBinContent(i+1, L)
+    return hist
+
+def plot_run_by_run_ir_lumi(run_list, ir_0, ir_1, lumi_path="/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root", do_print=False, y_axis='lumi', ncols=5, scale=1.0):
+    """
+    For every run in run_list, illustrate the contribution to the luminosity between interaction rate ir_0 to ir_1
+    """
+    lumi_file = r.TFile.Open("/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root")
+    lumi_hist_znc = lumi_file.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
+    total_lumi = lumi_hist_znc.Integral()
+
+    nrows = int(np.ceil(len(run_list)/ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(scale*21*ncols/5, scale*3*nrows), squeeze=False)
+    run_list.sort() # Plot in ascending order of run number
+    Ls = np.zeros_like(run_list, dtype=float)
+    for i, run in enumerate(run_list):
+        row = int(np.floor(i/ncols))
+        col = i%ncols
+        ax = axes[row, col]
+
+        data = np.genfromtxt(f"/home/sigurd/cernbox/notebooks/pyD0/interactionRates/{run}.txt", names=True)
+        ts = data['timestamp_ms']
+        ts = (ts - ts[0])/1000 # Convert to seconds from SOR
+        irs = data['interaction_rate']
+        irs = irs/1000 # Convert Hz to kHz
+
+        N, ts_crossings, ir_crossings = integrate_between_ys(ts, irs, ir_0, ir_1)
+
+        integrated_lumi = lumi_hist_znc.GetBinContent(lumi_hist_znc.GetXaxis().FindBin(run))
+        factor = integrated_lumi / np.trapezoid(irs, ts)
+        lumis = factor * irs
+        if y_axis == 'lumi':
+            ax.plot(ts, lumis*1000, '-')
+            ax.set_ylabel("ZNC instant. lumi. (mb$^{-1}$/s)")
+            ax.axhline(ir_0 * factor * 1000, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
+            ax.axhline(ir_1 * factor * 1000, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
+        elif y_axis == 'ir':
+            ax.plot(ts, irs, '-')
+            ax.set_ylabel("ZNC hadronic interaction rate (kHz)")
+            ax.axhline(ir_0, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
+            ax.axhline(ir_1, ts[0], ts[-1], color='green', linestyle='--', alpha=0.5)
+        else:
+            raise Exception(f"Don't know how to interpret y_axis={y_axis}!")
+        ax.set_xlabel("Time from SOR (s)") # Convert 1/µb -> 1/mb
+        ax.set_title(run)
+        ax.text(0.05, 0.05, f"Integral = {np.trapezoid(lumis, ts):.2f} 1/µb", ha='left', va='bottom', transform=ax.transAxes)
+
+        if do_print:
+            print(f"Found {len(ts_crossings)/2} regions:")
+        for t0, t1 in zip(ts_crossings[::2], ts_crossings[1::2]):
+            if do_print:
+                print(f"{t0} -> {t1}")
+            ax.axvspan(t0, t1, alpha=0.5, color='green', lw=0)
+        L = factor * N
+        Ls[i] = L
+        if do_print:
+            print(f"Run {run} has {L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
+        ax.text(0.05, 0.12, f"Contribution = {L:.2f} 1/µb", ha='left', va='bottom', transform=ax.transAxes)
+
+    fig.tight_layout()
+
+    # Now that we have the list of contributions, order the plots in descending order of contributing lumi
+    idx = np.argsort(Ls)[::-1]
+    axes_flattened = axes.ravel()
+    positions = [ax.get_position() for ax in axes_flattened]
+    axes_reordered = axes_flattened[idx]
+    for k, old_i in enumerate(idx):
+        axes_flattened[old_i].set_position(positions[k])
+
+    print(f"Total lumi between between {ir_0:.2f} kHz and {ir_1:.2f} kHz: {Ls.sum():.2f} 1/µb ({100*Ls.sum()/total_lumi:.2f}% of the total {total_lumi:.2f} 1/µb in the runlist)")
+    plt.show()
+
+def root_to_hist(hroot):
+    nbins = hroot.GetNbinsX()
+    edges = np.array([hroot.GetBinLowEdge(i) for i in range(1, nbins + 2)])
+    counts = np.array([hroot.GetBinContent(i) for i in range(1, nbins + 1)])
+    errors = np.array([hroot.GetBinError(i) for i in range(1, nbins + 1)])
+
+    h = hist.Hist(
+        hist.axis.Variable(edges, name=hroot.GetXaxis().GetName(), label=hroot.GetXaxis().GetTitle()),
+        storage=hist.storage.Weight()
+    )
+
+    view = h.view()
+    view.value[...] = counts
+    view.variance[...] = errors**2
+
+    return h
+
+def equal_stat_y_slices(h2, n_slices, start_bin=1, end_bin=None):
+    """
+    h2: TH2 (e.g. TH2F)
+    n_slices: desired number of Y slices with equal total entries (over X)
+    start_bin: first Y bin to include (1-based, inclusive, no under/overflow)
+    end_bin:   last Y bin to include (1-based, inclusive, no under/overflow).
+               If None, defaults to nbins_y.
+
+    Returns:
+        A list of (ybin_lo, ybin_hi) tuples (1-based, inclusive),
+        restricted to Y bins [start_bin .. end_bin].
+    """
+    nbins_x = h2.GetNbinsX()
+    nbins_y = h2.GetNbinsY()
+
+    if end_bin is None:
+        end_bin = nbins_y
+
+    # Sanity checks
+    if start_bin < 1 or start_bin > nbins_y:
+        raise ValueError(f"start_bin={start_bin} out of range [1, {nbins_y}]")
+    if end_bin < 1 or end_bin > nbins_y:
+        raise ValueError(f"end_bin={end_bin} out of range [1, {nbins_y}]")
+    if start_bin > end_bin:
+        raise ValueError(f"start_bin={start_bin} must be <= end_bin={end_bin}")
+
+    # 1) Sum over X for each Y bin from start_bin .. end_bin
+    per_y = []
+    total = 0.0
+    for j in range(start_bin, end_bin + 1):
+        s = 0.0
+        for i in range(1, nbins_x + 1):
+            s += h2.GetBinContent(i, j)
+        per_y.append(s)
+        total += s
+
+    if total <= 0:
+        raise RuntimeError(
+            f"Histogram has no entries in Y bins [{start_bin}..{end_bin}]."
+        )
+
+    # 2) Cumulative along Y within [start_bin..end_bin]
+    cumulative = []
+    run = 0.0
+    for s in per_y:
+        run += s
+        cumulative.append(run)
+
+    target_per_slice = total / float(n_slices)
+
+    # 3) Find upper-bin edge for each slice (except the last)
+    upper_edges = []  # Y-bin indices (1..nbins_y) as upper edges
+    k = 1  # we look for k * target_per_slice
+    for idx in range(len(per_y)):          # idx is 0..(end_bin-start_bin)
+        j = start_bin + idx                # real bin number
+        if k >= n_slices:
+            break
+        if cumulative[idx] >= k * target_per_slice:
+            upper_edges.append(j)
+            k += 1
+
+    # At most n_slices-1 boundaries; last boundary forced at end_bin
+    upper_edges = upper_edges[:n_slices-1]
+    upper_edges.append(end_bin)
+
+    # 4) Convert upper edges into (lo, hi) bin ranges
+    slices = []
+    prev_hi = start_bin - 1
+    for hi in upper_edges:
+        lo = prev_hi + 1
+        slices.append((lo, hi))
+        prev_hi = hi
+
+    return slices
+
+def trim_trailing_zeros(h_ref, *h_others):
+    """
+    Remove bins from scikit-hep/hist histograms based on trailing zeros in h_ref
+    """
+    vals = h_ref.values()
+    nonzero = vals != 0
+
+    if not nonzero.any():
+        # nothing non-zero; return original histograms unchanged or empty
+        return (h_ref,) + h_others
+
+    last_nonzero_idx = int(np.where(nonzero)[0][-1])
+    mask = np.arange(len(vals)) <= last_nonzero_idx
+
+    # print(h_ref[:last_nonzero_idx+1])
+    h_ref_trimmed = h_ref[0:last_nonzero_idx+1]
+    h_others_trimmed = tuple(h[0:last_nonzero_idx+1] for h in h_others)
+    n_trimmed = len(mask)-np.sum(mask)
+    print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.axes[0].name}")
+    return (h_ref_trimmed,) + h_others_trimmed, n_trimmed
+
+def trim_trailing_zeros_root(h_ref, *h_others):
+    """
+    Trim trailing zero bins from a reference 1D ROOT histogram (TH1*),
+    and apply the same trimming to other histograms with identical binning.
+
+    Parameters
+    ----------
+    h_ref : ROOT.TH1
+        Reference histogram; trailing zeros are determined from this one.
+    *h_others : ROOT.TH1
+        Other histograms to trim using the same bin range.
+
+    Returns
+    -------
+    tuple of ROOT.TH1
+        (h_ref_trimmed, h_other1_trimmed, ...)
+
+    Notes
+    -----
+    - Only works for 1D histograms.
+    - Assumes all histograms have the same number of bins and bin edges.
+    """
+    nbins = h_ref.GetNbinsX()
+
+    # Find last non-zero bin (ignore underflow bin 0 and overflow nbins+1)
+    last_nonzero = 0
+    for i in range(1, nbins + 1):
+        if h_ref.GetBinContent(i) != 0:
+            last_nonzero = i
+
+    if last_nonzero == 0:
+        # All bins are zero: return original histograms unchanged
+        print(f"All bins in {h_ref.GetName()} are zero")
+        n_trimmed = 0
+        return (h_ref,) + h_others + (n_trimmed,)
+
+    n_trimmed = nbins - last_nonzero
+
+    # New number of bins is last_nonzero; keep same axis range
+    xmin = h_ref.GetXaxis().GetXmin()
+    xmax = h_ref.GetBinLowEdge(last_nonzero + 1)  # upper edge of last kept bin
+
+    def _trim_one(h, name_suffix="_trimmed"):
+        # Create a new histogram with fewer bins and same range
+        name = h.GetName() + name_suffix
+        title = h.GetTitle()
+        h_trim = r.TH1D(name, title, last_nonzero, xmin, xmax)
+
+        # Copy contents (and errors)
+        for i in range(1, last_nonzero + 1):
+            content = h.GetBinContent(i)
+            h_trim.SetBinContent(i, content)
+            err = h.GetBinError(i)
+            h_trim.SetBinError(i, err)
+
+        return h_trim
+
+    h_ref_trim = _trim_one(h_ref)
+    h_others_trim = tuple(_trim_one(h) for h in h_others)
+
+    print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.GetName()}")
+    return (h_ref_trim,) + h_others_trim + (n_trimmed,)
+
+def add_graphs(g1, g2, name="g_sum", title=""):
+    n1 = g1.GetN()
+    n2 = g2.GetN()
+    if n1 != n2:
+        raise ValueError("Graphs have different number of points")
+
+    g_sum = r.TGraphAsymmErrors(n1)
+    g_sum.SetName(name)
+    g_sum.SetTitle(title)
+
+    for i in range(n1):
+        x1 = g1.GetX()[i]
+        y1 = g1.GetY()[i]
+        exl1 = g1.GetErrorXlow(i)
+        exh1 = g1.GetErrorXhigh(i)
+        eyl1 = g1.GetErrorYlow(i)
+        eyh1 = g1.GetErrorYhigh(i)
+
+        x2 = g2.GetX()[i]
+        y2 = g2.GetY()[i]
+        exl2 = g2.GetErrorXlow(i)
+        exh2 = g2.GetErrorXhigh(i)
+        eyl2 = g2.GetErrorYlow(i)
+        eyh2 = g2.GetErrorYhigh(i)
+
+        # sanity: same x (within tolerance)
+        if abs(x1 - x2) > 1e-9:
+            raise ValueError(f"x mismatch at point {i}: {x1} vs {x2}")
+
+        x  = x1
+        y  = y1 + y2
+
+        # choose x errors (here: take the max; or take from g1 if they’re identical)
+        exl = max(exl1, exl2)
+        exh = max(exh1, exh2)
+
+        # combine y errors in quadrature (assume uncorrelated)
+        eyl = np.sqrt(eyl1**2 + eyl2**2)
+        eyh = np.sqrt(eyh1**2 + eyh2**2)
+
+        g_sum.SetPoint(i, x, y)
+        g_sum.SetPointError(i, exl, exh, eyl, eyh)
+
+    return g_sum
+
+def set_alice_style():
+    r.gStyle.Reset("Plain");
+    r.gStyle.SetOptTitle(0);
+    r.gStyle.SetOptStat(0);
+    r.gStyle.SetPalette(1);
+    r.gStyle.SetCanvasColor(10)
+    r.gStyle.SetCanvasBorderMode(0);
+    r.gStyle.SetFrameLineWidth(1);
+    r.gStyle.SetFrameFillColor(r.kWhite);
+    r.gStyle.SetPadColor(10);
+    r.gStyle.SetPadTickX(1);
+    r.gStyle.SetPadTickY(1);
+    r.gStyle.SetPadBottomMargin(0.15);
+    r.gStyle.SetPadLeftMargin(0.15);
+    r.gStyle.SetHistLineWidth(1);
+    r.gStyle.SetHistLineColor(r.kRed);
+    r.gStyle.SetFuncWidth(2);
+    r.gStyle.SetFuncColor(r.kGreen);
+    r.gStyle.SetLineWidth(2);
+    r.gStyle.SetLabelSize(0.045,"xyz");
+    r.gStyle.SetLabelOffset(0.01,"y");
+    r.gStyle.SetLabelOffset(0.01,"x");
+    r.gStyle.SetLabelColor(r.kBlack,"xyz");
+    r.gStyle.SetTitleSize(0.05,"xyz");
+    r.gStyle.SetTitleOffset(1.25,"y");
+    r.gStyle.SetTitleOffset(1.25,"x");
+    r.gStyle.SetTitleFillColor(r.kWhite);
+    r.gStyle.SetTextSizePixels(26);
+    r.gStyle.SetTextFont(42);
+    r.gStyle.SetLegendBorderSize(0);
+    r.gStyle.SetLegendFillColor(r.kWhite);
+    r.gStyle.SetLegendFont(42);
+
+def create_seaborn_palette(name="bright"):
+    rgb_list = sns.color_palette(name)
+    colors = []
+    base_index = 10000
+    for i, rgb in enumerate(rgb_list):
+        c = r.TColor(rgb[0], rgb[1], rgb[2])
+        colors.append(c)
+    return colors
+
+def create_zdc_migration_matrix(ea, ec, pa, pc):
+    """
+    Returns the ZDC migration matrix C, where
+    N = CM,
+    N is the vector of observed counts, M is the vector of true counts
+    The row ordering is 0n0n, 0nXn, Xn0n, XnXn
+    Input: 
+    ea : ZNA efficiency
+    ec : ZNC efficiency
+    pa : ZNA pileup probability
+    pc : ZNC pileup probability
+    """
+    row_0n0n = [1 - pa*(1-pc) - pc*(1-pa) - pa*pc, (1-ec)*(1-pa)*(1-pc), (1-ea)*(1-pa)*(1-pc), (1-ea)*(1-ec)*(1-pa)*(1-pc)]
+    row_0nXn = [pc*(1-pa), 1 - ( (1-ec)*(1-pa)*(1-pc) + pa ), pc*(1-pa)*(1-ea), (1-ea)*(1-pa)*(ec + (1-ec)*pc)]
+    row_Xn0n = [pa*(1-pc), pa*(1-pc)*(1-ec), 1 - ( (1-ea)*(1-pc)*(1-pa) + pc ), (1-ec)*(1-pc)*(ea + (1-ea)*pa)]
+    row_XnXn = [pa*pc, pa*(ec + (1-ec)*pc), pc*(ea + (1-ea)*pc), 1 - ( (1-ea)*(1-pa)*(ec+(1-ec)*pc) + (1-ec)*(1-pc)*(ea+(1-ea)*pa) + (1-ea)*(1-ec)*(1-pa)*(1-pc))]
+    return np.array([row_0n0n, row_0nXn, row_Xn0n, row_XnXn])
+
+def get_mass_pt_in_neutron_classes(h):
+    """
+    From a 4-dim histogram of mass, pt, ZNA time, ZNC time,
+    obtain the mass vs pt histograms in the 4 different neutron classes
+    Assumes the following binning in ZNA and ZNC time: [-6, -2, 2, 6]
+    """
+    # Get the pieces of the 0n0n histogram
+    h.GetAxis(2).SetRange(0,1)
+    h.GetAxis(3).SetRange(0,1)
+    proj0n0n_ll = h.Projection(1, 0)
+    proj0n0n_ll.SetName("0n0n_ll")
+    h.GetAxis(2).SetRange(0,1)
+    h.GetAxis(3).SetRange(3,4)
+    proj0n0n_ul = h.Projection(1, 0)
+    proj0n0n_ul.SetName("0n0n_ul")
+    h.GetAxis(2).SetRange(3,4)
+    h.GetAxis(3).SetRange(0,1)
+    proj0n0n_lr = h.Projection(1, 0)
+    proj0n0n_lr.SetName("0n0n_lr")
+    h.GetAxis(2).SetRange(3,4)
+    h.GetAxis(3).SetRange(3,4)
+    proj0n0n_ur = h.Projection(1, 0)
+    proj0n0n_ur.SetName("0n0n_ur")
+    # Add together the pieces of the 0n0n histogram
+    proj0n0n = proj0n0n_ll.Clone("0n0n")
+    proj0n0n.Reset()
+    proj0n0n.Add(proj0n0n_ll)
+    proj0n0n.Add(proj0n0n_ul)
+    proj0n0n.Add(proj0n0n_lr)
+    proj0n0n.Add(proj0n0n_ur)
+    print(f"0n0n: {proj0n0n.GetEntries()} entries")
+
+    # Get the pieces of the 0nXn histogram
+    h.GetAxis(2).SetRange(0,1)
+    h.GetAxis(3).SetRange(2,2)
+    proj0nXn_l = h.Projection(1, 0)
+    proj0nXn_l.SetName("0nXn_l")
+    h.GetAxis(2).SetRange(3,4)
+    h.GetAxis(3).SetRange(2,2)
+    proj0nXn_r = h.Projection(1, 0)
+    proj0nXn_r.SetName("0nXn_r")
+    # Add together the pieces of the 0nXn histogram
+    proj0nXn = proj0nXn_l.Clone("0nXn")
+    proj0nXn.Reset()
+    proj0nXn.Add(proj0nXn_l)
+    proj0nXn.Add(proj0nXn_r)
+    print(f"0nXn: {proj0nXn.GetEntries()} entries")
+
+    # Get the pieces of the Xn0n histogram
+    h.GetAxis(2).SetRange(2,2)
+    h.GetAxis(3).SetRange(0,1)
+    projXn0n_l = h.Projection(1, 0)
+    projXn0n_l.SetName("Xn0n_l")
+    h.GetAxis(2).SetRange(2,2)
+    h.GetAxis(3).SetRange(3,4)
+    projXn0n_u = h.Projection(1, 0)
+    projXn0n_u.SetName("Xn0n_r")
+    projXn0n = projXn0n_l.Clone("Xn0n")
+    projXn0n.Reset()
+    projXn0n.Add(projXn0n_l)
+    projXn0n.Add(projXn0n_u)
+    print(f"Xn0n: {projXn0n.GetEntries()} entries")
+
+    # Get the XnXn histogram
+    h.GetAxis(2).SetRange(2,2)
+    h.GetAxis(3).SetRange(2,2)
+    projXnXn = h.Projection(1, 0)
+    projXnXn.SetName("XnXn")
+    print(f"XnXn: {projXnXn.GetEntries()} entries")
+
+    projs = [proj0n0n, proj0nXn, projXn0n, projXnXn]
+    return projs
+
+def make_ratio_canvas(h_num, h_den, rho=0.0, cname="c_ratio", log=True, 
+                      name_num=None, name_den=None, shortname_num='Num', shortname_den='Den'):
+    """
+    Create a tratioPlot-like canvas for two histograms with correlated uncertainties.
+
+    Parameters
+    ----------
+    h_num : ROOT.TH1
+        Numerator histogram (e.g. data).
+    h_den : ROOT.TH1
+        Denominator histogram (e.g. MC / prediction).
+    rho : float
+        Correlation coefficient between the *total uncertainties* of the two histograms.
+        Range typically [-1, 1].
+    cname : str
+        Name of the output TCanvas.
+
+    Returns
+    -------
+    ROOT.TCanvas
+        Canvas with upper pad (histograms) and lower pad (ratio).
+    ROOT.TH1
+        Ratio histogram with propagated errors.
+    """
+
+    # Basic checks
+    nbins_num = h_num.GetNbinsX()
+    nbins_den = h_den.GetNbinsX()
+    if nbins_num != nbins_den:
+        raise ValueError("Histograms must have the same number of bins.")
+
+    color_num = r.kRed
+    color_den = r.kBlue
+
+    # --- 1. Build ratio histogram with custom error propagation ---
+    ratio = h_num.Clone(h_num.GetName() + "_ratio")
+    ratio.SetTitle("")
+    ratio.Reset()  # We'll fill contents and errors manually
+
+    for i in range(1, nbins_num + 1):
+        A  = h_num.GetBinContent(i)
+        B  = h_den.GetBinContent(i)
+        eA = h_num.GetBinError(i)
+        eB = h_den.GetBinError(i)
+
+        if B == 0:
+            ratio.SetBinContent(i, 0.0)
+            ratio.SetBinError(i, 0.0)
+            continue
+
+        R = A / B
+        ratio.SetBinContent(i, R)
+
+        # Variances
+        var_A = eA * eA
+        var_B = eB * eB
+
+        # Covariance using global correlation coefficient rho
+        cov_AB = rho * np.sqrt(var_A * var_B)
+
+        # Error propagation for R = A / B:
+        # dr/dA =  1 / B
+        # dr/dB = -A / B^2
+        dA = 1.0 / B
+        dB = -A / (B * B)
+
+        var_r = (dA * dA) * var_A + (dB * dB) * var_B + 2.0 * dA * dB * cov_AB
+        if var_r < 0:
+            var_r = 0.0  # numerical safety
+
+        ratio.SetBinError(i, np.sqrt(var_r))
+
+    c = r.TCanvas(cname, "Ratio Plot", 800, 800)
+    c.Divide(1, 2)
+
+    # Top pad (main histograms)
+    pad1 = r.TPad("pad1", "pad1", 0.0, 0.30, 1.0, 1.0)
+    pad1.SetBottomMargin(0.08)
+
+    pad2 = r.TPad("pad2", "pad2", 0.0, 0.0, 1.0, 0.30)
+    pad2.SetTopMargin(0.05)
+    pad2.SetBottomMargin(0.25)
+
+    pad1.Draw()
+    pad2.Draw()
+
+    pad1.cd()
+    # Style for histograms
+    h_num.SetMarkerStyle(20)
+    h_num.SetMarkerColor(color_num)
+    h_num.SetLineColor(color_num)
+
+    h_den.SetLineColor(color_den)
+    h_den.SetFillColorAlpha(color_den, 0.35)
+
+    # Determine drawing range
+    h_num_max = h_num.GetMaximum()
+    h_den_max = h_den.GetMaximum()
+    max_y = 1.2 * max(h_num_max, h_den_max)
+    h_num.SetMaximum(max_y)
+
+    h_num.Draw("E1")
+    h_den.Draw("E1 SAME")
+    h_num.Draw("E1 SAME")
+
+    leg = r.TLegend(0.65, 0.7, 0.89, 0.89)
+    leg.SetBorderSize(0)
+    if name_num is not None and name_den is not None:
+        leg.AddEntry(h_num, name_num, "p")
+        leg.AddEntry(h_den, name_den, "p")
+        leg.Draw()
+        pad1.Update()
+
+    if log:
+        pad1.SetLogy()
+
+    pad2.cd()
+    ratio.GetYaxis().SetTitle(f"{shortname_num} / {shortname_den}")
+    ratio.GetYaxis().SetNdivisions(505)
+    ratio.GetYaxis().SetTitleSize(0.10)
+    ratio.GetYaxis().SetTitleOffset(0.4)
+    ratio.GetYaxis().SetLabelSize(0.08)
+
+    ratio.GetXaxis().SetTitle(h_num.GetXaxis().GetTitle())
+    ratio.GetXaxis().SetTitleSize(0.10)
+    ratio.GetXaxis().SetLabelSize(0.08)
+    ratio.GetXaxis().SetLabelOffset(0.02)
+
+    ratio.SetMarkerStyle(20)
+    ratio.SetMarkerColor(r.kBlack)
+    ratio.SetLineColor(r.kBlack)
+
+    # Set sensible ratio range
+    ratio.SetMinimum(0.5)
+    ratio.SetMaximum(1.5)
+
+    ratio.Draw("E1")
+
+    # Reference line at 1
+    xmin = h_num.GetXaxis().GetXmin()
+    xmax = h_num.GetXaxis().GetXmax()
+    line = r.TLine(xmin, 1.0, xmax, 1.0)
+    line.SetLineStyle(2)
+    line.SetLineColor(r.kGray+2)
+    line.Draw("SAME")
+
+    c.Draw()
+    return c, ratio, leg, line
+
+def uproot_open_fallback(paths):
+    for p in paths:
+        try:
+            return uproot.open(p)
+        except FileNotFoundError:
+            continue
+    raise FileNotFoundError(f"None of {paths!r} exist")

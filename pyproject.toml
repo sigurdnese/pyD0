@@ -1,0 +1,8 @@
+[project]
+name = "pyD0"
+version = "0.0.1"
+description = "D0 analysis"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
