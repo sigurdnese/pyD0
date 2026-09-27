@@ -403,18 +403,19 @@ def apply_ir_rescaling(hist_mc_rec_ir, hist_mc_gen_ir, theta, cov_theta, ir0, tr
         'R_arr'        : R_arr
     }
 
-def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, norm_by='lumi', min_ir=0, max_ir=None):
+def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, file_structure=FileStructures.RUNDIRS, ncols=4, bin_edges_ir=None, norm_by='lumi', min_ir=0, max_ir=None,
+                        hist_name_mass_ir = 'PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto'):
     """
     Obtain D0 yield per ZNC luminosity or number of selected events as a function of ZNC hadronic interaction rate
     IR bins are chosen by equally distributing the D0 candidates among n_ir_bins bins along the IR axis
     Yield is extracted using iminuit 
     """
     if hist_dict is None:
-        hist_names = ['analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto']
+        hist_names = ['analysis-asymmetric-pairing/output;1/' + hist_name_mass_ir]
         if norm_by == 'selected_events':
             hist_names.append('analysis-event-selection/output;1/Event_AfterCuts/MyInteractionRateHisto') 
         hist_dict = get_histograms(data_dir, runlist, hist_names, histogramNamesfileStructure=file_structure)
-    hist_m_ir = hist_dict['analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_kaonPIDTPCTOFpTDCAz:pionNoPIDpTDCAz/MyMassInteractionRateHisto']
+    hist_m_ir = hist_dict['analysis-asymmetric-pairing/output;1/' + hist_name_mass_ir]
     # Get IR bin edges
     if bin_edges_ir is None:
         min_bin = hist_m_ir.GetYaxis().FindBin(min_ir)
@@ -453,7 +454,7 @@ def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, 
         counts = h.values()
         bin_widths = np.diff(bin_edges)
 
-        fit_result = fit.fit_mass_peak(h, axis_name=axis.name, x_range=None, sigma_limits=(0.005, 0.05), amp_frac_init=0.007)
+        fit_result = fit.fit_mass_peak(h, axis_name=axis.name, x_range=(1.70,2.00), sigma_limits=(0.005, 0.05), amp_frac_init=0.007, amp_frac_limits=(0.001, 0.05), c2_limits=(1e3, 1e6))
         fit_results.append(fit_result)
         
         # Plot data + fit
@@ -549,7 +550,9 @@ def normalized_yield_ir(runlist, n_ir_bins=None, hist_dict=None, data_dir=None, 
         'low_edges_ir': low_edges_ir,
         result_name: hist_yield_normalized,
         'hist_yield': hist_yield,
-        denominator_name: hist_denominator
+        denominator_name: hist_denominator,
+        'fit_results': fit_results,
+        'canvas': c
     }
 
     return result
@@ -2851,17 +2854,20 @@ class Analysis():
 
         # Get default cut names, replace if specified in construction
         cutNames = {
-            "kaonLegCutName"       : "kaonPIDTPCTOFpTDCAz",
-            "pionLegCutName"       : "pionNoPIDpTDCAz",
+            "kaonLegCutName"       : "kaonPIDTPCTOFpTEtaDCAz",
+            "pionLegCutName"       : "pionNoPIDpTEtaDCAz",
             "pairCutName"          : "",
-            "mcCommonTrackCutName" : "singleGapTrackCuts4"
+            "mcKaonLegCutName"     : "kaonPIDTPCTOFpTDCAz",
+            "mcPionLegCutName"     : "pionNoPIDpTDCAz",
+            "mcCommonTrackCutName" : "singleGapTrackCuts5"
         }
         cutNames.update(kwargs)
         self.kaonLegCutName = cutNames["kaonLegCutName"]
         self.pionLegCutName = cutNames["pionLegCutName"]
+        self.mcKaonLegCutName = cutNames["mcKaonLegCutName"]
+        self.mcPionLegCutName = cutNames["mcPionLegCutName"]
         self.pairCutName = cutNames["pairCutName"]
         self.mcCommonTrackCutName = cutNames["mcCommonTrackCutName"]
-        print(f"mcCommonTrackCutName = {self.mcCommonTrackCutName}")
         if self.pairCutName != "":
             self.pairCutName = "_" + self.pairCutName
         # pT bins to be used in the differential cross section
@@ -2899,6 +2905,9 @@ class Analysis():
             print("INFO: Efficiency due to rapidity gap event selection was provided manually. Make sure the MC files do NOT contain a rapidity gap selection!")
 
     def calculate_lumi(self):
+        self.histLumi = self.fileTableMaker.Get(self.hLumiPath[0]).Get(self.hLumiPath[1])
+        if len(self.hLumiPath) == 3:
+            self.histLumi = self.histLumi.Get(self.hLumiPath[2])
         self.lumi = 0
         ax = self.histLumi.GetXaxis()
         for i in range(1, self.histLumi.GetNbinsX() + 1):
@@ -2948,7 +2957,7 @@ class Analysis():
 
     def prepare_histograms_mc(self):
         self.groupNameD0Generated = "MCTruthGenAfterBcCuts_D0FS"
-        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS"
+        self.groupNameD0PtMatched = f"PairsBarrelSEPM_{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS"
 
         # --- Define lists of histogram names ---
         # Main gen. lvl. histogram used for efficiency, and also all the histograms used for factorized efficiencies later
@@ -2957,7 +2966,7 @@ class Analysis():
         fullNameHistD0PtYGenerated = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0Generated + "/MyMcPtYHisto"
         fullNamesGen.append(fullNameHistD0PtYGenerated)
         # Main rec. matched histogram, the reflected histogram, and the rec. lvl. histograms used for factorized efficiencies later
-        baseNamesMc = ["noTrackCut:noTrackCut", f"{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}", f"{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}"]
+        baseNamesMc = ["noTrackCut:noTrackCut", f"{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}", f"{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}"]
         fullNamesMc = ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + baseName + "_KPiFromD0FS/Y_PtFine" for baseName in baseNamesMc]
         fullNamesMc += ["analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_" + baseName + "_KPiFromD0FS/Pt" for baseName in baseNamesMc]
         groupNameD0Matched = "analysis-asymmetric-pairing/output;1/" + self.groupNameD0PtMatched
@@ -2967,7 +2976,7 @@ class Analysis():
         fullNameHistD0MassPtReflected = "analysis-asymmetric-pairing/output;1/" + f"{self.groupNameD0PtMatched}Reflected" + "/MyMassPtHisto"
         # Histograms needed for rescaling the IR dependence of the efficiency
         fullNamesGen.append("analysis-asymmetric-pairing/output;1/MCTruthGenAfterBcCuts_D0FS/MyMcPtYInteractionRateHisto")
-        fullNamesMc.append(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto")
+        fullNamesMc.append(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto")
         # Histogram used in factorized efficiency
         fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_beforeEvtCuts_noTrackCut:noTrackCut_KPiFromD0FS/Pt")
         fullNamesMc.append("analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_beforeEvtCuts_noTrackCut:noTrackCut_KPiFromD0FS/Y_PtFine")
@@ -3006,7 +3015,7 @@ class Analysis():
         try:
             self.histD0YPtMatched = self.dictRecHists[fullNameHistD0YPtMatched]
         except:
-            self.histD0YPtMatched = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto"]
+            self.histD0YPtMatched = self.dictRecHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto"]
 
         self.histD0PtMatched = project_fiducial_acceptance(self.histD0YPtMatched, self.minY, self.maxY)
         self.histD0PtMatched.SetName("histD0PtMatched")
@@ -3037,10 +3046,6 @@ class Analysis():
             bin.nNotReflected = self.histD0PtNotReflected.Integral(matchedLowerBin, matchedUpperBin)
 
     def prepare_histograms_data(self):
-        self.histLumi = self.fileTableMaker.Get(self.hLumiPath[0]).Get(self.hLumiPath[1])
-        if len(self.hLumiPath) == 3:
-            self.histLumi = self.histLumi.Get(self.hLumiPath[2])
-
         # Data histogram names
         fullNameHistD0MassPt = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtHisto"
         fullNameHistD0MassPtY = "analysis-asymmetric-pairing/output;1/" + f"PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}{self.pairCutName}" + "/MyMassPtYHisto"
@@ -3155,7 +3160,7 @@ class Analysis():
 
     def fit_inv_mass(self, bin, backgroundFunction, fitRange = [1.64, 2.08], doPrint=True, isNominal=True, 
                      signalMuRange=None, signalSigmaRange=None, signalSigma=None,
-                     backgroundInitialParams=None,
+                     backgroundInitialParams=None, backgroundParLimits=None,
                      simpleFitInitialParams=[100, 1.85, 0.015, 100, 0],
                      simpleFitRange=[1.75, 1.98],
                      shadowRange=[1.8, 1.9],
@@ -3260,6 +3265,11 @@ class Analysis():
             fitFunc.SetParLimits(2, signalSigmaRange[0], signalSigmaRange[1])
         if signalSigma is not None:
             fitFunc.FixParameter(2, signalSigma)
+        # Set combinatorial background parameter limits if specified
+        if backgroundParLimits is not None:
+            for i in range(backgroundNPar):
+                if backgroundParLimits[i] is not None:
+                    fitFunc.SetParLimits(3 + 6 + i, backgroundParLimits[i][0], backgroundParLimits[i][1])
         ptr = massPtSlice.Fit(fitFunc, "LMES0" + ("Q" if not doPrint else ""), "", fitRange[0], fitRange[1])
         # Get TFitResult object whose lifetime is controlled by Python
         fitResult.result = ptr.Clone()
@@ -3820,12 +3830,12 @@ class Analysis():
                                                                                           "PtMcMatchedInSelEventKaonTPCTOFPID",
                                                                                           "Reconstructed, matched D0->Kpi in selected event, kaon passed TPC+TOF PID")
 
-        self.histD0PtMatchedInSelEventAfterTrackCuts = self.get_reconstructed_mc_histogram(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}_KPiFromD0FS",
+        self.histD0PtMatchedInSelEventAfterTrackCuts = self.get_reconstructed_mc_histogram(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}_KPiFromD0FS",
                                                                                            "PtMcMatchedInSelEventAfterTrackCuts",
                                                                                            "Reconstructed, matched D0->Kpi in selected event, selected tracks, no pair cuts")
 
         if not hasattr(self, 'histD0PtMatchedFinalBins'):
-            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.get_reconstructed_mc_histogram(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS",  "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", "Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
+            self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.get_reconstructed_mc_histogram(f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS",  "PtMcMatchedInSelEventAfterTrackCutsAndPairCuts", "Reconstructed, matched D0->Kpi in selected event, selected tracks, selected pairs")
         else:
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts = self.histD0PtMatchedFinalBins.Clone()
             self.histD0PtMatchedInSelEventAfterTrackCutsAndPairCuts.SetName("PtMcMatchedInSelEventAfterTrackCutsAndPairCuts")
@@ -3975,7 +3985,7 @@ class Analysis():
         Replaces the efficiency and the corrected spectrum
         """
         # Get the histograms for IR dependence rescaling
-        hist_rec_3d = self.dictMcHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.kaonLegCutName}:{self.pionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto"]
+        hist_rec_3d = self.dictMcHists[f"analysis-asymmetric-pairing/output;1/PairsBarrelSEPM_{self.mcKaonLegCutName}:{self.mcPionLegCutName}_{self.mcCommonTrackCutName}{self.pairCutName}_KPiFromD0FS/MyYPtInteractionRateHisto"]
         hist_rec_3d.GetXaxis().SetRangeUser(self.minY, self.maxY)
         hist_rec_2d = hist_rec_3d.Project3D('zy')
         hist_rec_2d.SetName("hist_rec_2d")
@@ -4607,7 +4617,7 @@ class Analysis():
             text_color = 'white' if luminance < 0.5 else 'black'
             ax.text(
                 j, i,
-                '{:0.3f}'.format(z) if z!=0 else '{:.0f}'.format(z),
+                '{:0.3f}'.format(z) if z>0.0005 else '{:.0f}'.format(z),
                 ha='center', va='center',
                 color=text_color
             )

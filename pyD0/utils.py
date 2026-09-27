@@ -771,7 +771,7 @@ def create_zdc_migration_matrix(ea, ec, pa, pc):
     row_0n0n = [1 - pa*(1-pc) - pc*(1-pa) - pa*pc, (1-ec)*(1-pa)*(1-pc), (1-ea)*(1-pa)*(1-pc), (1-ea)*(1-ec)*(1-pa)*(1-pc)]
     row_0nXn = [pc*(1-pa), 1 - ( (1-ec)*(1-pa)*(1-pc) + pa ), pc*(1-pa)*(1-ea), (1-ea)*(1-pa)*(ec + (1-ec)*pc)]
     row_Xn0n = [pa*(1-pc), pa*(1-pc)*(1-ec), 1 - ( (1-ea)*(1-pc)*(1-pa) + pc ), (1-ec)*(1-pc)*(ea + (1-ea)*pa)]
-    row_XnXn = [pa*pc, pa*(ec + (1-ec)*pc), pc*(ea + (1-ea)*pc), 1 - ( (1-ea)*(1-pa)*(ec+(1-ec)*pc) + (1-ec)*(1-pc)*(ea+(1-ea)*pa) + (1-ea)*(1-ec)*(1-pa)*(1-pc))]
+    row_XnXn = [pa*pc, pa*(ec + (1-ec)*pc), pc*(ea + (1-ea)*pa), 1 - ( (1-ea)*(1-pa)*(ec+(1-ec)*pc) + (1-ec)*(1-pc)*(ea+(1-ea)*pa) + (1-ea)*(1-ec)*(1-pa)*(1-pc))]
     return np.array([row_0n0n, row_0nXn, row_Xn0n, row_XnXn])
 
 def get_mass_pt_in_neutron_classes(h):
@@ -1003,3 +1003,109 @@ def uproot_open_fallback(paths):
         except FileNotFoundError:
             continue
     raise FileNotFoundError(f"None of {paths!r} exist")
+
+def absolute_profileX(h2):
+    """
+    Return a TProfileX of |Y|.
+
+    An intermediate TH2 is created by reflecting negative-Y bins onto
+    positive Y. Its bin errors are set to Poisson errors, sqrt(content).
+    """
+    xaxis = h2.GetXaxis()
+    yaxis = h2.GetYaxis()
+
+    nx = xaxis.GetNbins()
+    ny = yaxis.GetNbins()
+
+    # Preserve the X-axis binning.
+    xedges = array(
+        "d",
+        [xaxis.GetBinLowEdge(ix) for ix in range(1, nx + 1)]
+        + [xaxis.GetBinUpEdge(nx)],
+    )
+
+    # Construct the positive-|Y| axis from all original bin boundaries.
+    #
+    # This is appropriate provided no Y bin straddles zero. Usually zero
+    # is already a bin boundary for a signed observable.
+    abs_y_edges = sorted({
+        abs(yaxis.GetBinLowEdge(iy))
+        for iy in range(1, ny + 1)
+    } | {
+        abs(yaxis.GetBinUpEdge(iy))
+        for iy in range(1, ny + 1)
+    })
+    abs_y_edges = array("d", abs_y_edges)
+
+    h_abs = r.TH2D(
+        f"{h2.GetName()}_absY",
+        f"{h2.GetTitle()};{xaxis.GetTitle()};|{yaxis.GetTitle()}|",
+        nx, xedges,
+        len(abs_y_edges) - 1, abs_y_edges,
+    )
+    h_abs.SetDirectory(0)
+    h_abs.Sumw2()
+
+    # Fold negative and positive Y bins into bins in |Y|.
+    for ix in range(1, nx + 1):
+        x = xaxis.GetBinCenter(ix)
+
+        for iy in range(1, ny + 1):
+            content = h2.GetBinContent(ix, iy)
+            if content == 0.0:
+                continue
+
+            abs_y = abs(yaxis.GetBinCenter(iy))
+
+            # FindBin is used instead of Fill so the histogram represents
+            # counts in bins, not a set of weighted Fill calls.
+            iy_abs = h_abs.GetYaxis().FindBin(abs_y)
+            old_content = h_abs.GetBinContent(ix, iy_abs)
+
+            h_abs.SetBinContent(ix, iy_abs, old_content + content)
+
+    # Assign Poisson uncertainties after merging +/- Y bins.
+    for ix in range(1, nx + 1):
+        for iy in range(1, h_abs.GetNbinsY() + 1):
+            content = h_abs.GetBinContent(ix, iy)
+
+            # This assumes h2 contains non-negative event counts.
+            h_abs.SetBinError(ix, iy, np.sqrt(content) if content > 0 else 0.0)
+
+    profile = h_abs.ProfileX(
+        f"{h2.GetName()}_absProfileX",
+        1,
+        h_abs.GetNbinsY(),
+        "",
+    )
+    profile.SetDirectory(0)
+
+    return profile
+
+def profile_to_graph(profile, graphName, graphTitle):
+    graph = r.TGraphErrors()
+    graph.SetName(graphName)
+    graph.SetTitle(graphTitle)
+
+    point = 0
+
+    for ibin in range(1, profile.GetNbinsX() + 1):
+        # Skip bins without entries. This is usually important for TProfiles.
+        if profile.GetBinEntries(ibin) <= 0:
+            continue
+
+        x = profile.GetBinCenter(ibin)
+        y = profile.GetBinContent(ibin)
+
+        # Standard choice: horizontal uncertainty = half bin width.
+        ex = 0.5 * profile.GetBinWidth(ibin)
+
+        # For a TProfile, this is the profile uncertainty according to
+        # the profile error option currently set on the input profile.
+        ey = profile.GetBinError(ibin)
+
+        graph.SetPoint(point, x, y)
+        graph.SetPointError(point, ex, ey)
+        point += 1
+
+    return graph

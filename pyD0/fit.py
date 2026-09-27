@@ -25,7 +25,8 @@ def fit_mass_peak(
     mu_limits=(1.8, 1.9),
     sigma_limits=(0.01, 0.025),
     amp_frac_limits=(0.001, 0.02),
-    limit_tol=1e-6
+    limit_tol=1e-6,
+    c2_limits=(None, None)
 ):
     """
     Fit a 1D invariant-mass histogram with:
@@ -119,7 +120,7 @@ def fit_mass_peak(
     m.limits["sigma"] = sigma_limits
     if amp_frac_limits is not None:
         m.limits["amp"] = (total * amp_frac_limits[0], total * amp_frac_limits[1])
-    m.limits["c2"] = (None, None)
+    m.limits["c2"] = c2_limits
 
     # First pass
     m.migrad()
