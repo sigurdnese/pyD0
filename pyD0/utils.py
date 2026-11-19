@@ -1,12 +1,19 @@
+import uuid
+from scipy.optimize import minimize_scalar, brentq
 import ROOT as r
+import math
 import uproot
 import seaborn as sns
 import numpy as np
+from random import randint
 from array import array
 from scipy.stats import poisson
 import matplotlib.pyplot as plt
 from boost_histogram import axis
 import hist
+from . import fit_functions
+
+_root_callables = []
 
 defaultITSROFlength = 14821e-9 # seconds
 
@@ -390,7 +397,8 @@ def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/
     """
     ir_bin_edges: kHz
     """
-    print(f"Processing {len(run_list)} runs...")
+    if do_print:
+        print(f"Processing {len(run_list)} runs...")
     lumi_file = r.TFile.Open("/media/sigurd/T7/analysis/data/LHC23_PbPb_pass5_train590144/mergedAnalysisResults_good.root")
     lumi_hist_znc = lumi_file.Get('eventselection-run3').Get('luminosity').Get('hLumiZNCafterBCcuts')
     hist = r.TH1D('lumi_ir', 'lumi_ir', len(ir_bin_edges)-1, np.asarray(ir_bin_edges, 'd'))
@@ -398,7 +406,8 @@ def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/
     hist.GetXaxis().SetTitle('ZNC hadronic interaction rate (Hz)')
     hist.GetYaxis().SetTitle('ZNC luminosity (1/µb)')
     for i, (ir_0, ir_1) in enumerate(zip(ir_bin_edges[:-1], ir_bin_edges[1:])):
-        print(f"--- {ir_0:.3f} < IR < {ir_1:.3f} kHz ---")
+        if do_print:
+            print(f"--- {ir_0:.3f} < IR < {ir_1:.3f} kHz ---")
         L = 0
         n_contributing_runs = 0
         for run in run_list:
@@ -420,7 +429,8 @@ def get_lumi_vs_ir(run_list, ir_bin_edges, lumi_path="/media/sigurd/T7/analysis/
                     print(f"  Run {run} has {tmp_L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
             L += tmp_L
 
-        print(f"  {n_contributing_runs} runs contributed in total {L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
+        if do_print:
+            print(f"  {n_contributing_runs} runs contributed in total {L:.3f} 1/µb of luminosity between {ir_0} kHz and {ir_1} kHz")
         hist.SetBinContent(i+1, L)
     return hist
 
@@ -585,7 +595,7 @@ def equal_stat_y_slices(h2, n_slices, start_bin=1, end_bin=None):
 
     return slices
 
-def trim_trailing_zeros(h_ref, *h_others):
+def trim_trailing_zeros(h_ref, *h_others, do_print=True):
     """
     Remove bins from scikit-hep/hist histograms based on trailing zeros in h_ref
     """
@@ -603,10 +613,11 @@ def trim_trailing_zeros(h_ref, *h_others):
     h_ref_trimmed = h_ref[0:last_nonzero_idx+1]
     h_others_trimmed = tuple(h[0:last_nonzero_idx+1] for h in h_others)
     n_trimmed = len(mask)-np.sum(mask)
-    print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.axes[0].name}")
+    if do_print:
+        print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.axes[0].name}")
     return (h_ref_trimmed,) + h_others_trimmed, n_trimmed
 
-def trim_trailing_zeros_root(h_ref, *h_others):
+def trim_trailing_zeros_root(h_ref, *h_others, do_print=True):
     """
     Trim trailing zero bins from a reference 1D ROOT histogram (TH1*),
     and apply the same trimming to other histograms with identical binning.
@@ -666,7 +677,8 @@ def trim_trailing_zeros_root(h_ref, *h_others):
     h_ref_trim = _trim_one(h_ref)
     h_others_trim = tuple(_trim_one(h) for h in h_others)
 
-    print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.GetName()}")
+    if do_print:
+        print(f"Removed {n_trimmed} bins based on trailing zeros in {h_ref.GetName()}")
     return (h_ref_trim,) + h_others_trim + (n_trimmed,)
 
 def add_graphs(g1, g2, name="g_sum", title=""):
@@ -878,8 +890,9 @@ def make_ratio_canvas(h_num, h_den, rho=0.0, cname="c_ratio", log=True,
     if nbins_num != nbins_den:
         raise ValueError("Histograms must have the same number of bins.")
 
-    color_num = r.kRed
-    color_den = r.kBlue
+    palette = create_seaborn_palette()
+    color_num = palette[1].GetNumber()
+    color_den = palette[2].GetNumber()
 
     # --- 1. Build ratio histogram with custom error propagation ---
     ratio = h_num.Clone(h_num.GetName() + "_ratio")
@@ -919,6 +932,8 @@ def make_ratio_canvas(h_num, h_den, rho=0.0, cname="c_ratio", log=True,
 
         ratio.SetBinError(i, np.sqrt(var_r))
 
+    if 'c' in globals():
+        del c
     c = r.TCanvas(cname, "Ratio Plot", 800, 800)
     c.Divide(1, 2)
 
@@ -939,8 +954,9 @@ def make_ratio_canvas(h_num, h_den, rho=0.0, cname="c_ratio", log=True,
     h_num.SetMarkerColor(color_num)
     h_num.SetLineColor(color_num)
 
+    h_den.SetMarkerStyle(21)
+    h_den.SetMarkerColor(color_den)
     h_den.SetLineColor(color_den)
-    h_den.SetFillColorAlpha(color_den, 0.35)
 
     # Determine drawing range
     h_num_max = h_num.GetMaximum()
@@ -1109,3 +1125,1793 @@ def profile_to_graph(profile, graphName, graphTitle):
         point += 1
 
     return graph
+
+def default_fitting(analysis):
+    """
+    Shortcut to doing the invariant mass fits in the 11-bin analysis. Makes it easier to do systematic variations.
+    """
+    analysis.fit_inv_mass(0, fit_functions.pol2, fitRange=[1.7, 2.0], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.02], rebin=5, doPrint=False, reflParLimits=[None, [0.0,0.0001], None, None, None, None])
+    analysis.fit_inv_mass(1, fit_functions.pol2, fitRange=[1.68, 2.04], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, doPrint=False)
+    analysis.fit_inv_mass(2, fit_functions.pol2, fitRange=[1.68, 2.04], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, doPrint=False)
+    analysis.fit_inv_mass(3, fit_functions.pol3, fitRange=[1.68, 2.04], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, doPrint=False, backgroundInitialParams=[-29e3, 165e3, -317e3, 205e3])
+    analysis.fit_inv_mass(4, fit_functions.exp, fitRange=[1.68, 2.04], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, useCorrBkgTemplate=True, doPrint=False)
+    analysis.fit_inv_mass(5, fit_functions.exp, fitRange=[1.68, 2.04], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, useCorrBkgTemplate=True, doPrint=False)
+    analysis.fit_inv_mass(6, fit_functions.exp, fitRange=[1.68, 2.04], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, useCorrBkgTemplate=True, doPrint=False)
+    analysis.fit_inv_mass(7, fit_functions.exp, fitRange=[1.66, 2.06], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=5, useCorrBkgTemplate=True, doPrint=False)#, backgroundInitialParams=[25000, -3.14])
+    analysis.fit_inv_mass(8, fit_functions.exp, fitRange=[1.64, 2.1], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=10, useCorrBkgTemplate=True, doPrint=False)
+    analysis.fit_inv_mass(9, fit_functions.exp, fitRange=[1.62, 2.1], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.005, 0.05], rebin=10, useCorrBkgTemplate=True, doPrint=False)
+    analysis.fit_inv_mass(10, fit_functions.exp, fitRange=[1.62, 2.1], signalMuRange=[1.8, 1.9], signalSigmaRange=[0.01, 0.05], rebin=10, useCorrBkgTemplate=True, doPrint=False)
+
+def plot_relative_deviations(nominal, *variations, title="Relative deviations",
+                             x_title=None, y_range=None, y_padding=0.40, correlation=1.0):
+    """
+    Plot (variation - nominal) / nominal for an arbitrary number of variations.
+
+    Parameters
+    ----------
+    nominal : ROOT.TH1
+        Nominal histogram.
+
+    *variations : tuple(ROOT.TH1, str)
+        Each variation must be given as:
+            (variation_histogram, legend_label)
+
+    title : str, optional
+        Plot title.
+
+    x_title : str, optional
+        X-axis title. Defaults to the nominal histogram X-axis title.
+
+    y_range : tuple(float, float), optional
+        Explicit Y-axis range, e.g. (-0.2, 0.2). If omitted, a range is
+        computed automatically such that all variation points are visible.
+
+    y_padding : float, optional
+        Fractional padding added above and below the automatically determined
+        Y-axis range. For example, 0.10 means 10% padding.
+
+    Returns
+    -------
+    ROOT.TCanvas
+    """
+    scale = 1.25
+
+    if not variations:
+        raise ValueError("Provide at least one variation histogram.")
+
+    if nominal.GetDimension() != 1:
+        raise ValueError("This function currently supports one-dimensional histograms only.")
+
+    n_bins = nominal.GetNbinsX()
+
+    canvas_name = str(randint(0,1e9))
+    canvas = r.TCanvas(canvas_name, title, 500, 400)
+    canvas.SetGridy()
+
+    deviation_hists = []
+    all_values = []
+
+    # Build every deviation histogram before drawing, so that we can find
+    # a Y-axis range covering all of them.
+    for i, item in enumerate(variations):
+        try:
+            variation, label = item
+        except (TypeError, ValueError):
+            raise ValueError(
+                "Each variation must be given as a tuple: (histogram, legend_label)"
+            )
+
+        if variation.GetNbinsX() != n_bins:
+            raise ValueError(
+                f"Variation '{label}' has {variation.GetNbinsX()} bins, "
+                f"but nominal has {n_bins}."
+            )
+
+        deviation = variation.Clone(f"{variation.GetName()}_relative_deviation_{i}")
+        deviation.SetDirectory(0)
+        deviation.Reset("ICES")
+
+        # Only use normal histogram bins for determining the plotted range.
+        for bin_idx in range(1, n_bins + 1):
+            nominal_value = nominal.GetBinContent(bin_idx)
+            variation_value = variation.GetBinContent(bin_idx)
+            nominal_error = nominal.GetBinError(bin_idx)
+            variation_error = variation.GetBinError(bin_idx)
+
+            if nominal_value != 0.0:
+                value = (variation_value - nominal_value) / nominal_value
+                correlation = min(nominal_value, variation_value) / np.sqrt(nominal_value*variation_value)
+                print(correlation)
+                error = value * np.sqrt((variation_error/variation_value)**2 + (nominal_error/nominal_value)**2 - 2*(correlation*variation_error*nominal_error/(nominal_value*variation_value)))
+                all_values.append(value)
+            else:
+                value = 0.0
+
+            deviation.SetBinContent(bin_idx, value)
+            deviation.SetBinError(bin_idx, error)
+
+        colors = create_seaborn_palette()
+        color = colors[i].GetNumber()
+        deviation.SetLineColor(color)
+        deviation.SetMarkerColor(color)
+        deviation.SetLineWidth(2)
+        deviation.SetMarkerStyle(20 + (i % 10))
+        deviation.SetMarkerSize(0.9)
+
+        deviation.SetTitle(title)
+        deviation.GetYaxis().SetTitle("(variation - nominal) / nominal")
+        deviation.GetYaxis().SetTitleOffset(1.6)
+        deviation.GetXaxis().SetTitle(
+            x_title if x_title is not None else nominal.GetXaxis().GetTitle()
+        )
+        deviation.GetXaxis().SetTitleSize(deviation.GetYaxis().GetTitleSize()*scale)
+        deviation.GetYaxis().SetTitleSize(deviation.GetYaxis().GetTitleSize()*scale)
+        deviation.GetXaxis().SetLabelSize(deviation.GetYaxis().GetLabelSize()*scale)
+        deviation.GetYaxis().SetLabelSize(deviation.GetYaxis().GetLabelSize()*scale)
+        deviation.SetTitleSize(deviation.GetYaxis().GetTitleSize()*scale)
+        canvas.SetLeftMargin(0.16)
+        canvas.SetBottomMargin(0.16)
+
+        deviation_hists.append((deviation, label))
+
+    if not all_values:
+        raise ValueError("All nominal bins are zero; cannot determine deviations.")
+
+    legend = r.TLegend(0.45, 0.88-0.07*len(deviation_hists), 0.88, 0.88)
+
+    # Determine a range that contains every point.
+    if y_range is None:
+        y_min = min(all_values)
+        y_max = max(all_values)
+
+        # Include zero in the displayed range for easier interpretation.
+        y_min = min(y_min, 0.0)
+        y_max = max(y_max, 0.0)
+
+        span = y_max - y_min
+
+        # Handle the case where every point has exactly the same value.
+        if span == 0.0:
+            span = max(abs(y_min), 1.0)
+
+        padding = y_padding * span
+        y_range = (y_min - padding, y_max + padding)
+
+    # Draw after the common Y-axis range has been established.
+    for i, (deviation, label) in enumerate(deviation_hists):
+        deviation.GetYaxis().SetRangeUser(*y_range)
+
+        draw_option = "PE" if i == 0 else "PE SAME"
+        deviation.Draw(draw_option)
+
+        legend.AddEntry(deviation, label, "lp")
+
+    x_min = nominal.GetXaxis().GetXmin()
+    x_max = nominal.GetXaxis().GetXmax()
+
+    zero_line = r.TLine(x_min, 0.0, x_max, 0.0)
+    zero_line.SetLineColor(r.kBlack)
+    zero_line.SetLineStyle(2)
+    zero_line.SetLineWidth(2)
+    zero_line.Draw("SAME")
+
+    legend.Draw()
+    canvas.RedrawAxis()
+    canvas.Update()
+
+    # Keep references alive in PyROOT.
+    canvas._deviation_hists = [hist for hist, _ in deviation_hists]
+    canvas._deviation_legend = legend
+    canvas._deviation_zero_line = zero_line
+
+    _root_callables.append(canvas)
+    #return canvas
+
+import math
+import ROOT as r
+
+
+def d0_mass_widths_vs_pt(
+    h2,
+    pt_edges,
+    d0_mass=1.86483,
+    seed_half_window=0.050,
+    n_sigma=1.2,
+    max_columns=3,
+):
+    """
+    Project a 2D mass-vs-pt histogram into mass spectra for user-defined
+    pT intervals, fit each D0 mass peak with a Gaussian, display all fits
+    in a grid in Jupyter, and return the fitted Gaussian widths.
+
+    Parameters
+    ----------
+    h2 : ROOT.TH2
+        Input 2D histogram. X axis must be mass and Y axis must be pT.
+    pt_edges : sequence of float
+        pT bin edges in user coordinates, e.g. [0, 1, 2, 3, 5, 10].
+    d0_mass : float
+        Approximate D0 mass, in the same units as the X axis.
+    seed_half_window : float
+        Initial half-width around d0_mass for estimating the peak mean
+        and Gaussian width.
+    max_columns : int
+        Maximum number of canvas columns. Defaults to 3.
+
+    Returns
+    -------
+    list of float
+        Gaussian widths from final fits, one per pT interval. Empty or
+        failed fits return NaN.
+    """
+
+    if len(pt_edges) < 2:
+        raise ValueError("pt_edges must contain at least two values.")
+
+    if not h2.InheritsFrom("TH2"):
+        raise TypeError("h2 must be a 2D ROOT histogram (TH2).")
+
+    if max_columns < 1:
+        raise ValueError("max_columns must be at least 1.")
+
+    xaxis = h2.GetXaxis()
+    yaxis = h2.GetYaxis()
+
+    n_pt_bins = len(pt_edges) - 1
+    n_columns = min(max_columns, n_pt_bins)
+    n_rows = math.ceil(n_pt_bins / n_columns)
+
+    # One canvas containing all pT-bin fits.
+    canvas = r.TCanvas(
+        "cD0MassFits",
+        "D0 mass fits versus pT",
+        450 * n_columns,
+        400 * n_rows,
+    )
+    canvas.Divide(n_columns, n_rows)
+
+    widths = []
+    width_errors = []
+    root_objects = [canvas]
+
+    for i, (pt_low, pt_high) in enumerate(zip(pt_edges[:-1], pt_edges[1:])):
+        if pt_high <= pt_low:
+            raise ValueError(
+                f"Invalid pT range [{pt_low}, {pt_high}]: "
+                "upper edge must be greater than lower edge."
+            )
+
+        canvas.cd(i + 1)
+        r.gPad.SetTicks(1, 1)
+
+        # Select ROOT bins corresponding to user pT interval [pt_low, pt_high).
+        ybin_low = max(1, yaxis.FindFixBin(pt_low))
+        ybin_high = min(
+            yaxis.GetNbins(),
+            yaxis.FindFixBin(math.nextafter(pt_high, -math.inf)),
+        )
+
+        hmass = h2.ProjectionX(
+            f"hMass_ptbin_{i}",
+            ybin_low,
+            ybin_high,
+            "e",
+        )
+        hmass.SetDirectory(0)
+        hmass.SetTitle(f"{pt_low:g} < p_{{T}} < {pt_high:g};Mass;Candidates")
+        hmass.SetMarkerStyle(20)
+        hmass.SetMarkerSize(0.65)
+
+        if hmass.GetEntries() <= 0:
+            hmass.Draw("E")
+
+            label = r.TPaveText(0.20, 0.42, 0.80, 0.58, "NDC")
+            label.SetFillStyle(0)
+            label.SetBorderSize(0)
+            label.AddText("Empty projection")
+            label.Draw()
+
+            widths.append(float("nan"))
+            width_errors.append(float("nan"))
+            root_objects.extend([hmass, label])
+            continue
+
+        # Initial fit near the nominal D0 mass, used to estimate mu and sigma.
+        seed_low = max(xaxis.GetXmin(), d0_mass - seed_half_window)
+        seed_high = min(xaxis.GetXmax(), d0_mass + seed_half_window)
+
+        peak_bin = hmass.GetMaximumBin()
+        peak_height = hmass.GetBinContent(peak_bin)
+
+        f_seed = r.TF1(f"fSeed_ptbin_{i}", "gaus", seed_low, seed_high)
+        f_seed.SetParameters(max(peak_height, 1.0), d0_mass, 0.010)
+
+        hmass.Fit(f_seed, "RQ0")
+
+        mean_seed = f_seed.GetParameter(1)
+        sigma_seed = abs(f_seed.GetParameter(2))
+
+        if not math.isfinite(mean_seed):
+            mean_seed = d0_mass
+
+        if not math.isfinite(sigma_seed) or sigma_seed <= 0:
+            sigma_seed = 0.010
+
+        # Final fit in the range mu +/- n_sigma.
+        fit_low = max(xaxis.GetXmin(), mean_seed - n_sigma * sigma_seed)
+        fit_high = min(xaxis.GetXmax(), mean_seed + n_sigma * sigma_seed)
+
+        f_gaus = r.TF1(f"fD0_ptbin_{i}", "gaus", fit_low, fit_high)
+        f_gaus.SetParameters(max(peak_height, 1.0), mean_seed, sigma_seed)
+        f_gaus.SetLineColor(r.kRed + 1)
+        f_gaus.SetLineWidth(2)
+
+        fit_result = hmass.Fit(f_gaus, "RQS0")
+        fit_status = fit_result.Status()
+
+        width = (
+            abs(f_gaus.GetParameter(2))
+            if fit_status == 0
+            else float("nan")
+        )
+        widths.append(width)
+
+        width_error = (
+            abs(fit_result.GetErrors()[2])
+            if fit_status == 0
+            else float("nan")
+        )
+        width_errors.append(width_error)
+
+        hmass.Draw("E")
+        f_gaus.Draw("SAME")
+
+        chi2 = f_gaus.GetChisquare()
+        ndf = f_gaus.GetNDF()
+        chi2_ndf = chi2 / ndf if ndf > 0 else float("nan")
+
+        info = r.TPaveText(0.52, 0.60, 0.88, 0.88, "NDC")
+        info.SetFillStyle(0)
+        info.SetBorderSize(0)
+        info.SetTextAlign(12)
+        info.SetTextSize(0.045)
+        info.AddText(f"{pt_low:g} < p_{{T}} < {pt_high:g}")
+        info.AddText(f"#mu = {f_gaus.GetParameter(1):.6f}")
+        info.AddText(f"#sigma = {width:.6f}")
+        info.AddText(f"#chi^{{2}}/ndf = {chi2_ndf:.2f}")
+        info.AddText(f"status = {fit_status}")
+        info.Draw()
+
+        root_objects.extend([hmass, f_seed, f_gaus, info])
+
+    canvas.Modified()
+    canvas.Update()
+    canvas.Draw()
+
+    # Keep objects alive for PyROOT/Jupyter.
+    d0_mass_widths_vs_pt._root_objects = root_objects
+
+    return widths, width_errors
+
+def make_observable_template(
+    h3_data,
+    h2_mc,
+    low_pt,
+    high_pt,
+    mass_thresholds=(1.7, 1.8, 1.9, 2.0),
+    signal_to_background=0.091,
+    observable_label="Observable",
+    name_prefix="observable_template",
+    make_plots=True,
+    log_y=True,
+    binning_tolerance=1e-10,
+    x_range_comparison=None
+):
+    """
+    Build an observable template from interpolated data sidebands and MC.
+
+    Expected histogram axes
+    -----------------------
+    h3_data : ROOT.TH3
+        X axis: mass
+        Y axis: pT
+        Z axis: observable, for example Lxy, DCA, decay length, etc.
+
+    h2_mc : ROOT.TH2
+        X axis: pT
+        Y axis: the same observable represented by the Z axis of h3_data.
+
+    The final template is a normalized mixture of interpolated background
+    and normalized MC signal, using the supplied signal-to-background ratio.
+
+    Parameters
+    ----------
+    h3_data : ROOT.TH3
+        Data histogram with mass, pT, and observable axes.
+
+    h2_mc : ROOT.TH2
+        MC histogram with pT and observable axes.
+
+    low_pt : float
+        Lower edge of the selected pT interval.
+
+    high_pt : float
+        Upper edge of the selected pT interval.
+
+    mass_thresholds : tuple[float, float, float, float]
+        Boundaries defining the lower sideband, signal region, and upper
+        sideband:
+
+        (lower_sideband_low,
+         lower_sideband_high,
+         upper_sideband_low,
+         upper_sideband_high)
+
+        The signal mass region is between the second and third values.
+
+    signal_to_background : float
+        Signal-to-background ratio, S/B, in the selected pT interval.
+
+    observable_label : str
+        Human-readable observable label used in plot axes.
+
+    name_prefix : str
+        Prefix for unique ROOT object names.
+
+    make_plots : bool
+        If True, create and draw diagnostic canvases.
+
+    log_y : bool
+        If True, use logarithmic Y axes in the plots.
+
+    binning_tolerance : float
+        Absolute tolerance for comparisons of histogram bin edges.
+
+    Returns
+    -------
+    dict
+        Dictionary containing all intermediate histograms, the final
+        template, canvases, and legends.
+
+    Raises
+    ------
+    ValueError
+        If mass thresholds are invalid, the requested pT interval is invalid,
+        a histogram cannot be normalized, or data and MC observable binnings
+        are incompatible.
+    """
+
+    # ------------------------------------------------------------------
+    # Input validation.
+    # ------------------------------------------------------------------
+    if len(mass_thresholds) != 4:
+        raise ValueError(
+            "mass_thresholds must contain exactly four values."
+        )
+
+    (
+        lower_sideband_low,
+        lower_sideband_high,
+        upper_sideband_low,
+        upper_sideband_high,
+    ) = mass_thresholds
+
+    if not (
+        lower_sideband_low
+        < lower_sideband_high
+        < upper_sideband_low
+        < upper_sideband_high
+    ):
+        raise ValueError(
+            "Mass thresholds must satisfy: "
+            "m0 < m1 < m2 < m3."
+        )
+
+    if low_pt >= high_pt:
+        raise ValueError("low_pt must be smaller than high_pt.")
+
+    if signal_to_background < 0:
+        raise ValueError("signal_to_background must be non-negative.")
+
+    # Convert S/B into fractions of the total template.
+    signal_fraction = signal_to_background / (1.0 + signal_to_background)
+    background_fraction = 1.0 / (1.0 + signal_to_background)
+
+    unique_id = uuid.uuid4().hex[:10]
+
+    def make_name(label):
+        return f"{name_prefix}_{label}_{unique_id}"
+
+    def detach(histogram):
+        """Detach a histogram from the active ROOT directory."""
+        if hasattr(histogram, "SetDirectory"):
+            histogram.SetDirectory(0)
+        return histogram
+
+    def normalized_clone(histogram, label):
+        """Create a detached clone normalized to unit integral."""
+        integral = histogram.Integral()
+
+        if integral <= 0:
+            raise ValueError(
+                f"Cannot normalize histogram '{histogram.GetName()}': "
+                f"integral is {integral}."
+            )
+
+        output = detach(histogram.Clone(make_name(label)))
+        output.Scale(1.0 / integral)
+
+        return output
+
+    def get_interval_bins(axis, low_value, high_value):
+        """
+        Return bins corresponding to the half-open interval
+        [low_value, high_value).
+        """
+        first_bin = axis.FindBin(low_value)
+
+        # Use the value immediately below high_value so a bin that starts
+        # exactly at high_value is not included.
+        last_bin = axis.FindBin(
+            math.nextafter(high_value, -math.inf)
+        )
+
+        if last_bin < first_bin:
+            raise ValueError(
+                f"No valid bins found in interval "
+                f"[{low_value}, {high_value})."
+            )
+
+        return first_bin, last_bin
+
+    def get_histogram_binning(histogram):
+        """Return all regular-bin edges, including the final upper edge."""
+        axis = histogram.GetXaxis()
+
+        edges = [
+            axis.GetBinLowEdge(bin_index)
+            for bin_index in range(1, histogram.GetNbinsX() + 1)
+        ]
+        edges.append(axis.GetBinUpEdge(histogram.GetNbinsX()))
+
+        return edges
+
+    def check_compatible_binning(histogram_a, histogram_b):
+        """
+        Raise ValueError unless two TH1 histograms have identical X binning.
+        """
+        n_bins_a = histogram_a.GetNbinsX()
+        n_bins_b = histogram_b.GetNbinsX()
+
+        axis_a = histogram_a.GetXaxis()
+        axis_b = histogram_b.GetXaxis()
+
+        if n_bins_a != n_bins_b:
+            raise ValueError(
+                "Incompatible observable binning between data background "
+                "and MC signal.\n"
+                f"Data background: {n_bins_a} bins over "
+                f"[{axis_a.GetXmin()}, {axis_a.GetXmax()}]\n"
+                f"MC signal:      {n_bins_b} bins over "
+                f"[{axis_b.GetXmin()}, {axis_b.GetXmax()}]\n"
+                "The histograms must have the same number of bins and "
+                "identical bin edges. No rebinning was performed."
+            )
+
+        edges_a = get_histogram_binning(histogram_a)
+        edges_b = get_histogram_binning(histogram_b)
+
+        for edge_index, (edge_a, edge_b) in enumerate(
+            zip(edges_a, edges_b)
+        ):
+            if not math.isclose(
+                edge_a,
+                edge_b,
+                rel_tol=0.0,
+                abs_tol=binning_tolerance,
+            ):
+                raise ValueError(
+                    "Incompatible observable binning between data background "
+                    "and MC signal.\n"
+                    f"First mismatched edge index: {edge_index}\n"
+                    f"Data background edge: {edge_a}\n"
+                    f"MC signal edge:      {edge_b}\n"
+                    f"Data background: {n_bins_a} bins over "
+                    f"[{axis_a.GetXmin()}, {axis_a.GetXmax()}]\n"
+                    f"MC signal:      {n_bins_b} bins over "
+                    f"[{axis_b.GetXmin()}, {axis_b.GetXmax()}]\n"
+                    "The histograms must have identical bin edges. "
+                    "No rebinning was performed."
+                )
+
+    # ------------------------------------------------------------------
+    # Select the requested pT interval in data and project to a
+    # mass-vs-observable TH2.
+    # ------------------------------------------------------------------
+    data_pt_axis = h3_data.GetYaxis()
+
+    original_data_pt_first_bin = data_pt_axis.GetFirst()
+    original_data_pt_last_bin = data_pt_axis.GetLast()
+
+    data_pt_first_bin, data_pt_last_bin = get_interval_bins(
+        data_pt_axis,
+        low_pt,
+        high_pt,
+    )
+
+    data_pt_axis.SetRange(data_pt_first_bin, data_pt_last_bin)
+
+    try:
+        # For h3_data with X=mass, Y=pT, Z=observable:
+        # Project3D("zx") has mass on X and observable on Y.
+        h2_data_mass_observable = detach(
+            h3_data.Project3D("zx")
+        )
+        h2_data_mass_observable.SetName(
+            make_name("data_mass_observable")
+        )
+
+    finally:
+        # Restore the pT range of the supplied input histogram.
+        data_pt_axis.SetRange(
+            original_data_pt_first_bin,
+            original_data_pt_last_bin,
+        )
+
+    # ------------------------------------------------------------------
+    # Project the observable in lower sideband, signal region,
+    # and upper sideband.
+    # ------------------------------------------------------------------
+    mass_axis = h3_data.GetXaxis()
+
+    lower_sb_first_bin, lower_sb_last_bin = get_interval_bins(
+        mass_axis,
+        lower_sideband_low,
+        lower_sideband_high,
+    )
+
+    signal_first_bin, signal_last_bin = get_interval_bins(
+        mass_axis,
+        lower_sideband_high,
+        upper_sideband_low,
+    )
+
+    upper_sb_first_bin, upper_sb_last_bin = get_interval_bins(
+        mass_axis,
+        upper_sideband_low,
+        upper_sideband_high,
+    )
+
+    h_observable_sideband_low = detach(
+        h2_data_mass_observable.ProjectionY(
+            make_name("observable_sideband_low"),
+            lower_sb_first_bin,
+            lower_sb_last_bin,
+        )
+    )
+
+    h_observable_signal_region = detach(
+        h2_data_mass_observable.ProjectionY(
+            make_name("observable_signal_region"),
+            signal_first_bin,
+            signal_last_bin,
+        )
+    )
+
+    h_observable_sideband_high = detach(
+        h2_data_mass_observable.ProjectionY(
+            make_name("observable_sideband_high"),
+            upper_sb_first_bin,
+            upper_sb_last_bin,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Linearly interpolate sideband shapes to the signal mass midpoint.
+    # ------------------------------------------------------------------
+    midpoint_lower_sideband = 0.5 * (
+        lower_sideband_low + lower_sideband_high
+    )
+    midpoint_signal_region = 0.5 * (
+        lower_sideband_high + upper_sideband_low
+    )
+    midpoint_upper_sideband = 0.5 * (
+        upper_sideband_low + upper_sideband_high
+    )
+
+    interpolation_parameter = (
+        (midpoint_signal_region - midpoint_lower_sideband)
+        / (midpoint_upper_sideband - midpoint_lower_sideband)
+    )
+
+    h_observable_background = detach(
+        h_observable_sideband_low.Clone(
+            make_name("observable_background")
+        )
+    )
+    h_observable_background.Scale(1.0 - interpolation_parameter)
+    h_observable_background.Add(
+        h_observable_sideband_high,
+        interpolation_parameter,
+    )
+
+    # ------------------------------------------------------------------
+    # Project MC observable in the same pT interval.
+    # ------------------------------------------------------------------
+    mc_pt_axis = h2_mc.GetXaxis()
+
+    mc_pt_first_bin, mc_pt_last_bin = get_interval_bins(
+        mc_pt_axis,
+        low_pt,
+        high_pt,
+    )
+
+    h_observable_mc_signal = detach(
+        h2_mc.ProjectionY(
+            make_name("observable_mc_signal"),
+            mc_pt_first_bin,
+            mc_pt_last_bin,
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Enforce identical observable binning before the template is built.
+    # ------------------------------------------------------------------
+    check_compatible_binning(
+        h_observable_background,
+        h_observable_mc_signal,
+    )
+
+    # ------------------------------------------------------------------
+    # Normalize all shapes and construct the final template.
+    # ------------------------------------------------------------------
+    h_observable_background_normalized = normalized_clone(
+        h_observable_background,
+        "observable_background_normalized",
+    )
+
+    h_observable_mc_signal_normalized = normalized_clone(
+        h_observable_mc_signal,
+        "observable_mc_signal_normalized",
+    )
+
+    h_observable_data_signal_normalized = normalized_clone(
+        h_observable_signal_region,
+        "observable_data_signal_normalized",
+    )
+
+    h_observable_template = detach(
+        h_observable_background_normalized.Clone(
+            make_name("observable_template")
+        )
+    )
+    h_observable_template.Scale(background_fraction)
+    h_observable_template.Add(
+        h_observable_mc_signal_normalized,
+        signal_fraction,
+    )
+
+    h_observable_template.SetTitle(
+        f"{observable_label} template;{observable_label};Normalized entries"
+    )
+
+    result = {
+        "pt_range": (low_pt, high_pt),
+        "mass_thresholds": tuple(mass_thresholds),
+        "signal_to_background": signal_to_background,
+        "signal_fraction": signal_fraction,
+        "background_fraction": background_fraction,
+        "interpolation_parameter": interpolation_parameter,
+        "h2_data_mass_observable": h2_data_mass_observable,
+        "h_observable_sideband_low": h_observable_sideband_low,
+        "h_observable_sideband_high": h_observable_sideband_high,
+        "h_observable_signal_region": h_observable_signal_region,
+        "h_observable_background": h_observable_background,
+        "h_observable_mc_signal": h_observable_mc_signal,
+        "h_observable_background_normalized": (
+            h_observable_background_normalized
+        ),
+        "h_observable_mc_signal_normalized": (
+            h_observable_mc_signal_normalized
+        ),
+        "h_observable_data_signal_normalized": (
+            h_observable_data_signal_normalized
+        ),
+        "h_observable_template": h_observable_template,
+        "canvases": {},
+        "legends": {},
+        "pads": {},
+        "lines": {},
+    }
+
+    # ------------------------------------------------------------------
+    # Diagnostic plots.
+    # ------------------------------------------------------------------
+    if make_plots:
+        palette = create_seaborn_palette()
+        color_lower_sideband = palette[4].GetNumber()
+        color_upper_sideband = palette[5].GetNumber()
+        color_background = palette[2].GetNumber()
+        color_mc_signal = palette[3].GetNumber()
+        color_template = palette[1].GetNumber()
+        color_data_signal = palette[0].GetNumber()
+
+        for histogram, color in [
+            (h_observable_sideband_low, color_lower_sideband),
+            (h_observable_sideband_high, color_upper_sideband),
+            (h_observable_background, color_background),
+            (h_observable_background_normalized, color_background),
+            (h_observable_mc_signal_normalized, color_mc_signal),
+            (h_observable_template, color_template),
+            (h_observable_data_signal_normalized, color_data_signal),
+            (h_observable_signal_region, color_data_signal),
+        ]:
+            histogram.SetLineColor(color)
+            histogram.SetLineWidth(2)
+
+        # --------------------------------------------------------------
+        # Canvas: distributions in the three mass regions.
+        # --------------------------------------------------------------
+        c_mass_regions = r.TCanvas(
+            make_name("canvas_mass_regions"),
+            "Observable distributions in mass regions",
+            1800,
+            550,
+        )
+        c_mass_regions.Divide(3, 1)
+
+        mass_region_plots = [
+            (
+                h_observable_signal_region,
+                "Data: signal mass region",
+            ),
+            (
+                h_observable_sideband_low,
+                "Data: lower-mass sideband",
+            ),
+            (
+                h_observable_sideband_high,
+                "Data: upper-mass sideband",
+            ),
+        ]
+
+        for pad_number, (histogram, title) in enumerate(
+            mass_region_plots,
+            start=1,
+        ):
+            c_mass_regions.cd(pad_number)
+
+            histogram.SetTitle(title)
+            histogram.GetXaxis().SetTitle(observable_label)
+            histogram.GetYaxis().SetTitle("Entries")
+            histogram.SetStats(0)
+            histogram.Draw("hist")
+
+            if log_y:
+                r.gPad.SetLogy()
+
+        c_mass_regions.Update()
+        c_mass_regions.Draw()
+
+        # --------------------------------------------------------------
+        # Canvas: sideband interpolation.
+        # --------------------------------------------------------------
+        c_background = r.TCanvas(
+            make_name("canvas_background"),
+            "Interpolated background",
+            850,
+            650,
+        )
+        c_background.cd()
+
+        h_observable_background.SetTitle(
+            f"Sideband interpolation;{observable_label};Entries"
+        )
+        h_observable_sideband_low.SetTitle("Background")
+        h_observable_sideband_low.Draw("hist")
+        h_observable_sideband_high.Draw("hist same")
+        h_observable_background.Draw("hist same")
+
+        legend_background = r.TLegend(0.48, 0.65, 0.88, 0.86)
+        legend_background.SetBorderSize(0)
+        legend_background.SetFillStyle(0)
+
+        legend_background.AddEntry(
+            h_observable_sideband_low,
+            "Lower-mass sideband",
+            "l",
+        )
+        legend_background.AddEntry(
+            h_observable_sideband_high,
+            "Upper-mass sideband",
+            "l",
+        )
+        legend_background.AddEntry(
+            h_observable_background,
+            f"Interpolated background, alpha = {interpolation_parameter:.3f}",
+            "l",
+        )
+        legend_background.Draw()
+
+        if log_y:
+            r.gPad.SetLogy()
+
+        c_background.Update()
+        c_background.Draw()
+
+        # --------------------------------------------------------------
+        # Canvas: template compared to data in the signal mass region.
+        # --------------------------------------------------------------
+        c_template = r.TCanvas(
+            make_name("canvas_template"),
+            "Template comparison with residuals",
+            850,
+            800,
+        )
+
+        template_top_pad = r.TPad(
+            make_name("template_top_pad"),
+            "Template comparison",
+            0.0,
+            0.30,
+            1.0,
+            1.0,
+        )
+
+        template_residual_pad = r.TPad(
+            make_name("template_residual_pad"),
+            "Relative residuals",
+            0.0,
+            0.0,
+            1.0,
+            0.30,
+        )
+
+        template_top_pad.SetBottomMargin(0.02)
+        template_top_pad.SetLeftMargin(0.12)
+        template_top_pad.SetRightMargin(0.05)
+
+        template_residual_pad.SetTopMargin(0.04)
+        template_residual_pad.SetBottomMargin(0.30)
+        template_residual_pad.SetLeftMargin(0.12)
+        template_residual_pad.SetRightMargin(0.05)
+
+        template_top_pad.Draw()
+        template_residual_pad.Draw()
+
+        # --------------------------------------------------------------
+        # Upper pad: normalized template and normalized signal-region data.
+        # --------------------------------------------------------------
+        template_top_pad.cd()
+
+        h_observable_template.SetTitle("")
+        h_observable_template.SetStats(0)
+        if x_range_comparison is not None:
+            h_observable_template.GetXaxis().SetRangeUser(x_range_comparison[0], x_range_comparison[1])
+        h_observable_template.GetXaxis().SetLabelSize(0.0)
+        h_observable_template.GetXaxis().SetTitleSize(0.0)
+        h_observable_template.GetYaxis().SetTitle("Normalized entries")
+        h_observable_template.GetYaxis().SetTitleSize(0.045)
+        h_observable_template.GetYaxis().SetLabelSize(0.045)
+        h_observable_template.GetYaxis().SetTitleOffset(1.05)
+
+        h_observable_data_signal_normalized.SetStats(0)
+        if x_range_comparison is not None:
+            h_observable_data_signal_normalized.GetXaxis().SetRangeUser(x_range_comparison[0], x_range_comparison[1])
+
+        h_observable_background_normalized.SetStats(0)
+        if x_range_comparison is not None:
+            h_observable_background_normalized.GetXaxis().SetRangeUser(x_range_comparison[0], x_range_comparison[1])
+
+        h_observable_template.Draw("hist")
+        h_observable_background_normalized.Draw("hist same")
+        h_observable_data_signal_normalized.Draw("e1 same")
+
+        legend_template = r.TLegend(0.42, 0.64, 0.88, 0.86)
+        legend_template.SetBorderSize(0)
+        legend_template.SetFillStyle(0)
+
+        legend_template.AddEntry(
+            h_observable_template,
+            (
+                f"Template: S/B = {signal_to_background:.4g} => "
+                f"signal fraction = {signal_fraction:.2%}"
+            ),
+            "l",
+        )
+        legend_template.AddEntry(
+            h_observable_background_normalized,
+            "Interpolated background",
+            "l",
+        )
+        legend_template.AddEntry(
+            h_observable_data_signal_normalized,
+            "Data in signal mass region (normalized)",
+            "lep",
+        )
+        legend_template.Draw()
+
+        if log_y:
+            template_top_pad.SetLogy()
+
+        # --------------------------------------------------------------
+        # Lower pad: relative residuals.
+        # --------------------------------------------------------------
+        template_residual_pad.cd()
+
+        h_observable_relative_residual = detach(
+            h_observable_data_signal_normalized.Clone(
+                make_name("observable_relative_residual")
+            )
+        )
+        h_observable_relative_residual.Reset("ICES")
+        h_observable_relative_residual.SetTitle("")
+        h_observable_relative_residual.SetStats(0)
+        if x_range_comparison is not None:
+            h_observable_relative_residual.GetXaxis().SetRangeUser(x_range_comparison[0], x_range_comparison[1])
+
+        residual_values = []
+
+        for bin_index in range(
+            1,
+            h_observable_relative_residual.GetNbinsX() + 1,
+        ):
+            data_value = h_observable_data_signal_normalized.GetBinContent(
+                bin_index
+            )
+            data_error = h_observable_data_signal_normalized.GetBinError(
+                bin_index
+            )
+            template_value = h_observable_template.GetBinContent(
+                bin_index
+            )
+
+            # A residual is undefined if the template bin is empty.
+            if template_value <= 0.0:
+                h_observable_relative_residual.SetBinContent(
+                    bin_index,
+                    0.0,
+                )
+                h_observable_relative_residual.SetBinError(
+                    bin_index,
+                    0.0,
+                )
+                continue
+
+            relative_residual = (
+                data_value - template_value
+            ) / template_value
+
+            # Data statistical uncertainty only.
+            relative_residual_error = data_error / template_value
+
+            h_observable_relative_residual.SetBinContent(
+                bin_index,
+                relative_residual,
+            )
+            h_observable_relative_residual.SetBinError(
+                bin_index,
+                relative_residual_error,
+            )
+
+            residual_values.append(
+                abs(relative_residual) + relative_residual_error
+            )
+
+        h_observable_relative_residual.SetMarkerStyle(20)
+        h_observable_relative_residual.SetMarkerSize(0.7)
+        h_observable_relative_residual.SetMarkerColor(r.kBlack)
+        h_observable_relative_residual.SetLineColor(r.kBlack)
+
+        h_observable_relative_residual.GetXaxis().SetTitle(
+            observable_label
+        )
+        h_observable_relative_residual.GetYaxis().SetTitle(
+            "(Data - Template) / Template"
+        )
+
+        h_observable_relative_residual.GetXaxis().SetTitleSize(0.10)
+        h_observable_relative_residual.GetXaxis().SetLabelSize(0.08)
+        h_observable_relative_residual.GetXaxis().SetTitleOffset(1.05)
+        h_observable_relative_residual.GetXaxis().SetLabelOffset(0.02)
+
+        h_observable_relative_residual.GetYaxis().SetTitleSize(0.07)
+        h_observable_relative_residual.GetYaxis().SetLabelSize(0.08)
+        h_observable_relative_residual.GetYaxis().SetTitleOffset(0.4)
+        h_observable_relative_residual.GetYaxis().SetLabelOffset(0.02)
+        h_observable_relative_residual.GetYaxis().SetNdivisions(505)
+
+        # Choose a symmetric range around zero based on visible residuals.
+        residual_limit = max(residual_values, default=0.5)
+        residual_limit = max(0.25, 1.15 * residual_limit)
+
+        h_observable_relative_residual.GetYaxis().SetRangeUser(
+            -residual_limit,
+            residual_limit,
+        )
+        h_observable_relative_residual.Draw("e1")
+
+        residual_zero_line = r.TLine(
+            h_observable_relative_residual.GetXaxis().GetXmin(),
+            0.0,
+            h_observable_relative_residual.GetXaxis().GetXmax(),
+            0.0,
+        )
+        residual_zero_line.SetLineStyle(2)
+        residual_zero_line.SetLineWidth(2)
+        residual_zero_line.SetLineColor(r.kGray + 2)
+        residual_zero_line.Draw("same")
+
+        c_template.Update()
+        c_template.Draw()
+
+        result["h_observable_relative_residual"] = (
+            h_observable_relative_residual
+        )
+
+        # --------------------------------------------------------------
+        # Canvas: individual normalized template components.
+        # --------------------------------------------------------------
+        c_components = r.TCanvas(
+            make_name("canvas_components"),
+            "Normalized template components",
+            850,
+            650,
+        )
+        c_components.cd()
+
+        h_observable_background_normalized.SetTitle(
+            f"Normalized template components;"
+            f"{observable_label};Normalized entries"
+        )
+        h_observable_background_normalized.Draw("hist")
+        h_observable_mc_signal_normalized.Draw("hist same")
+        h_observable_template.Draw("hist same")
+
+        legend_components = r.TLegend(0.43, 0.62, 0.88, 0.86)
+        legend_components.SetBorderSize(0)
+        legend_components.SetFillStyle(0)
+
+        legend_components.AddEntry(
+            h_observable_background_normalized,
+            "Interpolated background shape",
+            "l",
+        )
+        legend_components.AddEntry(
+            h_observable_mc_signal_normalized,
+            "MC signal shape",
+            "l",
+        )
+        legend_components.AddEntry(
+            h_observable_template,
+            "Final template",
+            "l",
+        )
+        legend_components.Draw()
+
+        if log_y:
+            r.gPad.SetLogy()
+
+        c_components.Update()
+        c_components.Draw()
+
+        result["canvases"] = {
+            "mass_regions": c_mass_regions,
+            "background_interpolation": c_background,
+            "template_comparison": c_template,
+            "template_components": c_components,
+        }
+
+        result["legends"] = {
+            "background_interpolation": legend_background,
+            "template_comparison": legend_template,
+            "template_components": legend_components,
+        }
+
+        result["pads"] = {
+            "template_comparison_top": template_top_pad,
+            "template_comparison_residual": template_residual_pad,
+        }
+
+        result["lines"] = {
+            "template_residual_zero": residual_zero_line,
+        }
+
+    return result
+
+def fit_nonprompt_fraction(
+    hData,
+    hBkg,
+    hPrompt,
+    hNonPrompt,
+    s_over_b,
+    f_B_low=0.0,
+    f_B_high=1.0,
+    canvas_name="cLxyTemplateFit",
+    variable_name="Lxy",
+    logy=False,
+    title="",
+    x_title=0.5,
+    show_residuals=False,
+):
+    """
+    One-parameter Lxy template fit without RooFit.
+
+    Parameters
+    ----------
+    hData : ROOT.TH1
+        Data Lxy histogram, containing observed candidate counts.
+
+    hBkg, hPrompt, hNonPrompt : ROOT.TH1
+        Background, prompt-MC, and non-prompt-MC templates.
+        The function normalizes them internally. They must have the
+        same binning as hData and contain no negative bin contents.
+
+    s_over_b : float
+        Fixed signal-to-background ratio, S/B, from an external data fit.
+
+    f_B_low : float
+        Lower limit for the fitted non-prompt fraction
+
+    f_B_high : float
+        Higher limit for the fitted non-prompt fraction
+
+    canvas_name : str
+        Name assigned to the ROOT canvas and output histograms.
+
+    logy : bool
+        Use a logarithmic y-axis in the plot.
+
+    Returns
+    -------
+    dict
+        Contains the fitted fB, uncertainties, canvas, and fitted
+        component TH1 histograms.
+    """
+
+    if s_over_b < 0.0:
+        raise ValueError("s_over_b must be non-negative.")
+
+    # Convert fixed S/B into the fixed total signal fraction.
+    #
+    # Fsig = S / (S + B) = (S/B) / (1 + S/B)
+    fsig = float(s_over_b) / (1.0 + float(s_over_b))
+    fbkg = 1.0 - fsig
+
+    # ------------------------------------------------------------------
+    # Check common binning
+    # ------------------------------------------------------------------
+    nbins = hData.GetNbinsX()
+    xmin = hData.GetXaxis().GetXmin()
+    xmax = hData.GetXaxis().GetXmax()
+
+    for h in (hBkg, hPrompt, hNonPrompt):
+        for i in range(1, nbins + 2):
+            edge_data = hData.GetXaxis().GetBinLowEdge(i)
+            edge_template = h.GetXaxis().GetBinLowEdge(i)
+
+            if abs(edge_data - edge_template) > 1e-12:
+                raise ValueError(
+                    "Histogram bin edges differ at edge %d: "
+                    "data=%g, template=%g for component %s"
+                    % (i, edge_data, edge_template, h.GetName())
+                )
+
+    data = [float(hData.GetBinContent(i)) for i in range(1, nbins + 1)]
+    bkg = [float(hBkg.GetBinContent(i)) for i in range(1, nbins + 1)]
+    prompt = [float(hPrompt.GetBinContent(i)) for i in range(1, nbins + 1)]
+    nonprompt = [float(hNonPrompt.GetBinContent(i)) for i in range(1, nbins + 1)]
+
+    if any(x < 0.0 for x in data):
+        raise ValueError("Data histogram contains negative bin contents.")
+
+    if any(x < 0.0 for x in bkg + prompt + nonprompt):
+        raise ValueError("Template histograms must not contain negative bin contents.")
+
+    nData = sum(data)
+
+    if nData <= 0.0:
+        raise ValueError("Data histogram has zero total integral.")
+
+    # Normalize templates to bin probabilities.
+    bkg_norm = sum(bkg)
+    prompt_norm = sum(prompt)
+    nonprompt_norm = sum(nonprompt)
+
+    if bkg_norm <= 0.0:
+        raise ValueError("Background template has zero integral.")
+    if prompt_norm <= 0.0:
+        raise ValueError("Prompt template has zero integral.")
+    if nonprompt_norm <= 0.0:
+        raise ValueError("Non-prompt template has zero integral.")
+
+    bkg = [x / bkg_norm for x in bkg]
+    prompt = [x / prompt_norm for x in prompt]
+    nonprompt = [x / nonprompt_norm for x in nonprompt]
+
+    # ------------------------------------------------------------------
+    # Binned Poisson negative log likelihood, up to an additive constant.
+    # ------------------------------------------------------------------
+    def nll(fB):
+        result = 0.0
+
+        for observed, b, p, np in zip(data, bkg, prompt, nonprompt):
+            probability = (
+                fbkg * b
+                + fsig * ((1.0 - fB) * p + fB * np)
+            )
+
+            expected = nData * probability
+
+            if expected <= 0.0:
+                if observed > 0.0:
+                    return float("inf")
+                continue
+
+            result += expected
+            if observed > 0.0:
+                result -= observed * math.log(expected)
+
+        return result
+
+    # Fit the sole parameter in its physical range.
+    minimization = minimize_scalar(
+        nll,
+        bounds=(f_B_low, f_B_high),
+        method="bounded",
+        options={"xatol": 1e-10},
+    )
+
+    fB = float(minimization.x)
+    nll_min = float(minimization.fun)
+
+    # ------------------------------------------------------------------
+    # Compare the best fit against the null hypothesis fB = 0.
+    # ------------------------------------------------------------------
+    nll_fB0 = nll(0.0)
+
+    q0 = max(0.0, 2.0 * (nll_fB0 - nll_min))
+
+    # Since fB is physically constrained to fB >= 0 and fB=0 is on the
+    # boundary, use the asymptotic half-chi-square distribution:
+    #
+    # p0 = 0.5 * P(chi2 with 1 dof >= q0)
+    #
+    # Equivalent one-sided Gaussian significance: Z = sqrt(q0).
+    if q0 > 0.0:
+        p_fB0 = 0.5 * math.erfc(math.sqrt(q0 / 2.0))
+        significance = math.sqrt(q0)
+    else:
+        p_fB0 = 1.0
+        significance = 0.0
+
+    # ------------------------------------------------------------------
+    # Asymmetric 68% profile-likelihood interval:
+    # Delta(-2 ln L) = 1, equivalently Delta(NLL) = 0.5.
+    # ------------------------------------------------------------------
+    nll_target = nll_min + 0.5
+
+    def profile_root(x):
+        return nll(x) - nll_target
+
+    if fB <= 1e-8:
+        fB_low = 0.0
+    else:
+        try:
+            fB_low = brentq(profile_root, 0.0, fB)
+        except ValueError:
+            fB_low = 0.0
+
+    if fB >= 1.0 - 1e-8:
+        fB_high = 1.0
+    else:
+        try:
+            fB_high = brentq(profile_root, fB, 1.0)
+        except ValueError:
+            fB_high = 1.0
+
+    # ------------------------------------------------------------------
+    # Make histograms for the fitted components.
+    # ------------------------------------------------------------------
+    hTotal = hData.Clone(canvas_name + "_total")
+    hFitBkg = hData.Clone(canvas_name + "_bkg")
+    hFitPrompt = hData.Clone(canvas_name + "_prompt")
+    hFitNonPrompt = hData.Clone(canvas_name + "_nonprompt")
+
+    for h in (hTotal, hFitBkg, hFitPrompt, hFitNonPrompt):
+        h.Reset("ICES")
+        h.SetDirectory(0)
+
+    n_bkg = nData * fbkg
+    n_prompt = nData * fsig * (1.0 - fB)
+    n_nonprompt = nData * fsig * fB
+
+    for i in range(1, nbins + 1):
+        j = i - 1
+
+        y_bkg = n_bkg * bkg[j]
+        y_prompt = n_prompt * prompt[j]
+        y_nonprompt = n_nonprompt * nonprompt[j]
+
+        hFitBkg.SetBinContent(i, y_bkg)
+        hFitPrompt.SetBinContent(i, y_prompt)
+        hFitNonPrompt.SetBinContent(i, y_nonprompt)
+        hTotal.SetBinContent(i, y_bkg + y_prompt + y_nonprompt)
+
+    # ------------------------------------------------------------------
+    # Global goodness of fit: Baker-Cousins likelihood-ratio chi-square.
+    #
+    # chi2_BC = 2 * sum_i [ mu_i - n_i + n_i*log(n_i/mu_i) ]
+    #
+    # This is appropriate for the binned Poisson likelihood used above.
+    # ------------------------------------------------------------------
+    chi2_bc = 0.0
+    n_bins_used = 0
+
+    for i in range(1, nbins + 1):
+        observed = hData.GetBinContent(i)
+        expected = hTotal.GetBinContent(i)
+
+        # Ignore bins that have neither observed nor predicted entries.
+        if observed <= 0.0 and expected <= 0.0:
+            continue
+
+        n_bins_used += 1
+
+        if expected <= 0.0:
+            # This should not occur for a viable fit if observed > 0.
+            chi2_bc = float("inf")
+            break
+
+        if observed > 0.0:
+            chi2_bc += 2.0 * (
+                expected
+                - observed
+                + observed * math.log(observed / expected)
+            )
+        else:
+            chi2_bc += 2.0 * expected
+
+    # One free fitted parameter: fB.
+    #
+    # S/B is externally fixed, as is the overall histogram normalization.
+    ndf = n_bins_used - 1
+
+    # ------------------------------------------------------------------
+    # Styling
+    # ------------------------------------------------------------------
+    palette = create_seaborn_palette()
+
+    hData.SetMarkerStyle(20)
+    hData.SetStats(0)
+    hData.SetMarkerSize(0.9)
+    hData.SetLineColor(r.kBlack)
+
+    hTotal.SetLineColor(palette[0].GetNumber())
+    hTotal.SetStats(0)
+    hTotal.SetLineWidth(3)
+
+    hFitBkg.SetLineColor(palette[1].GetNumber())
+    hFitBkg.SetStats(0)
+    hFitBkg.SetLineStyle(2)
+    hFitBkg.SetLineWidth(3)
+
+    hFitPrompt.SetLineColor(palette[2].GetNumber())
+    hFitPrompt.SetStats(0)
+    hFitPrompt.SetLineStyle(2)
+    hFitPrompt.SetLineWidth(3)
+
+    hFitNonPrompt.SetLineColor(palette[3].GetNumber())
+    hFitNonPrompt.SetStats(0)
+    hFitNonPrompt.SetLineStyle(2)
+    hFitNonPrompt.SetLineWidth(3)
+
+    # ------------------------------------------------------------------
+    # Residuals / pulls:
+    #
+    # pull_i = (N_data,i - N_fit,i) / sqrt(N_fit,i)
+    # ------------------------------------------------------------------
+    hResidual = hData.Clone(canvas_name + "_residuals")
+    hResidual.Reset("ICES")
+    hResidual.SetDirectory(0)
+
+    for i in range(1, nbins + 1):
+        observed = hData.GetBinContent(i)
+        expected = hTotal.GetBinContent(i)
+
+        if expected > 0.0:
+            residual = (observed - expected) / math.sqrt(expected)
+        else:
+            residual = 0.0
+
+        hResidual.SetBinContent(i, residual)
+        hResidual.SetBinError(i, 0.0)
+
+    hResidual.SetMarkerStyle(20)
+    hResidual.SetMarkerSize(0.8)
+    hResidual.SetLineColor(r.kBlack)
+
+    # ------------------------------------------------------------------
+    # Canvas with upper fit pad and lower residual pad
+    # ------------------------------------------------------------------
+    canvas = r.TCanvas(f"{canvas_name}_{uuid.uuid4().hex[:10]}", canvas_name, 900, 800)
+    canvas.SetLeftMargin(0.12)
+    canvas.SetRightMargin(0.03)
+
+    if show_residuals:
+        padTop = r.TPad(
+            canvas_name + "_top",
+            canvas_name + "_top",
+            0.0, 0.30, 1.0, 1.0
+        )
+
+        padBottom = r.TPad(
+            canvas_name + "_bottom",
+            canvas_name + "_bottom",
+            0.0, 0.0, 1.0, 0.30
+        )
+
+        padTop.SetLeftMargin(0.12)
+        padTop.SetRightMargin(0.05)
+        padTop.SetTopMargin(0.07)
+        padTop.SetBottomMargin(0.02)
+
+        padBottom.SetLeftMargin(0.12)
+        padBottom.SetRightMargin(0.05)
+        padBottom.SetTopMargin(0.03)
+        padBottom.SetBottomMargin(0.32)
+
+        if logy:
+            padTop.SetLogy()
+
+        padTop.Draw()
+        padBottom.Draw()
+    elif logy:
+        r.gPad.SetLogy() 
+
+    # ------------------------------------------------------------------
+    # Top pad: data and templates
+    # ------------------------------------------------------------------
+    # Clones of histograms to show density
+    hDataPlot = hData.Clone("hDataPlot")
+    hDataPlot.Scale(1.0, "width")
+    hTotalPlot = hTotal.Clone("hTotalPlot")
+    hTotalPlot.Scale(1.0, "width")
+    hFitBkgPlot = hFitBkg.Clone("hFitBkgPlot")
+    hFitBkgPlot.Scale(1.0, "width")
+    hFitPromptPlot = hFitPrompt.Clone("hFitPromptPlot")
+    hFitPromptPlot.Scale(1.0, "width")
+    hFitNonPromptPlot = hFitNonPrompt.Clone("hFitNonPromptPlot")
+    hFitNonPromptPlot.Scale(1.0, "width")
+
+    if show_residuals:
+        padTop.cd()
+
+    ymax = max(hDataPlot.GetMaximum(), hTotalPlot.GetMaximum())
+    hDataPlot.SetMaximum(1.35 * ymax)
+    hDataPlot.SetMinimum(1 if logy else 0.0)
+
+    hDataPlot.SetTitle("")
+
+    hDataPlot.GetYaxis().SetTitle(f"Candidate density")
+    hDataPlot.GetYaxis().SetTitleSize(0.045)
+    hDataPlot.GetYaxis().SetLabelSize(0.04)
+    hDataPlot.GetXaxis().SetTitleSize(0.045)
+    hDataPlot.GetXaxis().SetLabelSize(0.04)
+
+    # Hide the x-axis labels in the upper pad.
+    if show_residuals:
+        hDataPlot.GetXaxis().SetLabelSize(0.0)
+        hDataPlot.GetXaxis().SetTitleSize(0.0)
+
+    hDataPlot.Draw("E1")
+    hTotalPlot.Draw("HIST SAME")
+    hFitBkgPlot.Draw("HIST SAME")
+    hFitPromptPlot.Draw("HIST SAME")
+    hFitNonPromptPlot.Draw("HIST SAME")
+    hDataPlot.Draw("E1 SAME")
+
+    # legend = r.TLegend(0.15, 0.60, 0.6, 0.88)
+    legend = r.TLegend(0.15, 0.12, 0.6, 0.40)
+    legend.SetBorderSize(0)
+    legend.SetFillStyle(0)
+    legend.AddEntry(hDataPlot, "Data", "lep")
+    legend.AddEntry(hTotalPlot, "Total fit", "l")
+    legend.AddEntry(hFitBkgPlot, "Background", "l")
+    legend.AddEntry(hFitPromptPlot, "Prompt D^{0}", "l")
+    legend.AddEntry(hFitNonPromptPlot, "Non-prompt D^{0}", "l")
+    legend.Draw()
+
+    label = r.TLatex()
+    label.SetNDC(True)
+    label.SetTextSize(0.036)
+    label.SetTextFont(42)
+
+    x_text = 0.64
+    y_text = 0.83
+    y_text_delta = 0.06 
+    label.DrawLatex(
+        x_title,
+        y_text,
+        "#bf{%s}" % title
+    )
+    label.DrawLatex(
+        x_text,
+        y_text - y_text_delta,
+        "#scale[1.0]{f_{B} = %.3f^{+%.3f}_{-%.3f}}" % (
+            fB,
+            fB_high - fB,
+            fB - fB_low,
+        ),
+    )
+    label.DrawLatex(
+        x_text, 
+        y_text - 2*y_text_delta, 
+        "#scale[1.0]{S/B = %.3f (fixed)}" % s_over_b,
+    )
+    label.DrawLatex(
+        x_text,
+        y_text - 3*y_text_delta,
+        #"#chi^{2}_{BC}/ndf = %.1f / %d" % (chi2_bc, ndf),
+        "#scale[1.0]{#chi^{2}/ndf = %.2f}" % (chi2_bc/ndf),
+    )
+    """
+    label.DrawLatex(
+        x_text,
+        0.71,
+        "-2#Delta ln L(f_{B}=0) = %.2f" % q0,
+    )
+
+    label.DrawLatex(
+        x_text,
+        0.66,
+        "Preference for f_{B}>0: %.2f #sigma" % significance,
+    )
+    """
+
+    # ------------------------------------------------------------------
+    # Bottom pad: standardized residuals
+    # ------------------------------------------------------------------
+    if show_residuals:
+        padBottom.cd()
+
+        max_abs_residual = max(
+            abs(hResidual.GetBinContent(i))
+            for i in range(1, nbins + 1)
+        )
+
+        # Always show at least the range [-3, 3].
+        residual_range = max(3.0, 1.20 * max_abs_residual)
+
+        hResidual.SetMinimum(-residual_range)
+        hResidual.SetMaximum(+residual_range)
+
+        hResidual.GetYaxis().SetTitle("(Data-Fit)/#sqrt{Fit}")
+        hResidual.GetYaxis().SetNdivisions(505)
+        hResidual.GetYaxis().SetTitleSize(0.10)
+        hResidual.GetYaxis().SetTitleOffset(0.52)
+        hResidual.GetYaxis().SetLabelSize(0.085)
+
+        hResidual.GetXaxis().SetTitle(hData.GetXaxis().GetTitle())
+        hResidual.GetXaxis().SetTitleSize(0.12)
+        hResidual.GetXaxis().SetTitleOffset(1.05)
+        hResidual.GetXaxis().SetLabelSize(0.10)
+
+        hResidual.Draw("P")
+
+        zeroLine = r.TLine(xmin, 0.0, xmax, 0.0)
+        zeroLine.SetLineColor(r.kGray + 2)
+        zeroLine.SetLineWidth(2)
+        zeroLine.Draw("SAME")
+
+        plusOneLine = r.TLine(xmin, 1.0, xmax, 1.0)
+        minusOneLine = r.TLine(xmin, -1.0, xmax, -1.0)
+
+        for line in (plusOneLine, minusOneLine):
+            line.SetLineColor(r.kGray + 2)
+            line.SetLineStyle(2)
+            line.Draw("SAME")
+
+    canvas.cd()
+    canvas.Modified()
+    canvas.Update()
+
+    result = {
+        "fB": fB,
+        "fB_errlo": fB - fB_low,
+        "fB_errhi": fB_high - fB,
+        "nll": nll_min,
+        "s_over_b": s_over_b,
+        "signal_fraction": fsig,
+        "canvas": canvas,
+        "data": hData,
+        "total": hTotal,
+        "bkg": hFitBkg,
+        "prompt": hFitPrompt,
+        "nonprompt": hFitNonPrompt,
+        "legend": legend,
+    }
+    if show_residuals:
+        result.update({
+            "residuals": hResidual,
+            "pad_top": padTop,
+            "pad_bottom": padBottom,
+            "lines": (zeroLine, plusOneLine, minusOneLine)}
+        )
+    return result
+
+def crop_hist_x(h, xcut, name=None):
+    """
+    Return a new TH1 histogram containing bins up to xcut.
+
+    Only complete bins are retained: a bin is included if its upper edge
+    is <= xcut. Underflow and overflow contents/errors are copied too.
+
+    Parameters
+    ----------
+    h : ROOT.TH1
+        Input histogram.
+    xcut : float
+        Upper x boundary.
+    name : str, optional
+        Name for the output histogram.
+
+    Returns
+    -------
+    ROOT.TH1D
+        Cropped histogram.
+    """
+    if name is None:
+        name = h.GetName() + "_cropped"
+
+    xaxis = h.GetXaxis()
+    nbins = h.GetNbinsX()
+
+    # Find final fully included bin.
+    last_bin = 0
+    for ibin in range(1, nbins + 1):
+        if xaxis.GetBinUpEdge(ibin) <= xcut:
+            last_bin = ibin
+        else:
+            break
+
+    if last_bin == 0:
+        raise ValueError(
+            f"xcut={xcut} is below the upper edge of the first bin "
+            f"({xaxis.GetBinUpEdge(1)})"
+        )
+
+    # Preserve the original bin edges, including variable-width bins.
+    edges = [xaxis.GetBinLowEdge(1)]
+    for ibin in range(1, last_bin + 1):
+        edges.append(xaxis.GetBinUpEdge(ibin))
+
+    out = r.TH1D(
+        name,
+        h.GetTitle(),
+        last_bin,
+        array("d", edges),
+    )
+    out.SetDirectory(0)
+
+    # Preserve axis titles.
+    out.GetXaxis().SetTitle(xaxis.GetTitle())
+    out.GetYaxis().SetTitle(h.GetYaxis().GetTitle())
+
+    # Preserve bin content and uncertainties.
+    out.Sumw2()
+    for ibin in range(0, last_bin + 2):
+        out.SetBinContent(ibin, h.GetBinContent(ibin))
+        out.SetBinError(ibin, h.GetBinError(ibin))
+
+    # Preserve common display settings.
+    out.SetLineColor(h.GetLineColor())
+    out.SetLineStyle(h.GetLineStyle())
+    out.SetLineWidth(h.GetLineWidth())
+    out.SetMarkerColor(h.GetMarkerColor())
+    out.SetMarkerStyle(h.GetMarkerStyle())
+    out.SetMarkerSize(h.GetMarkerSize())
+    out.SetFillColor(h.GetFillColor())
+    out.SetFillStyle(h.GetFillStyle())
+
+    return out

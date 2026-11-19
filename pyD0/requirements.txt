@@ -1,5 +1,5 @@
 absl-py==2.5.0
-alienpy @ file:///local/workspace/DailyBuilds/DailyO2-ubuntu2404/daily-tags.DzWoqpea3l/SOURCES/xjalienfs/1.7.0/1.7.0
+#alienpy @ file:///local/workspace/DailyBuilds/DailyO2-ubuntu2404/daily-tags.DzWoqpea3l/SOURCES/xjalienfs/1.7.0/1.7.0
 anyio==4.14.2
 argon2-cffi==25.1.0
 argon2-cffi-bindings==25.1.0
@@ -210,7 +210,7 @@ widgetsnbextension==3.4.2
 wrapt==1.14.2
 xgboost==1.7.5
 xmltodict==1.0.4
-xrootd @ file:///local/workspace/DailyBuilds/DailyO2-ubuntu2404/daily-tags.DzWoqpea3l/BUILD/c4e145c6309baa0845ac4a2e1e15e514a1188ab1/XRootD/bindings/python
+# xrootd @ file:///local/workspace/DailyBuilds/DailyO2-ubuntu2404/daily-tags.DzWoqpea3l/BUILD/c4e145c6309baa0845ac4a2e1e15e514a1188ab1/XRootD/bindings/python
 xxhash==3.8.1
 zict==3.0.0
 zipp==4.1.0

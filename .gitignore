@@ -2,3 +2,4 @@ pyD0.egg-info
 test*.py
 *~
 __pycache__
+build/
